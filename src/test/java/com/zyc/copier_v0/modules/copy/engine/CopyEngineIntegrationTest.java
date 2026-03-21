@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zyc.copier_v0.modules.monitor.domain.Mt5ConnectionStatus;
 import com.zyc.copier_v0.modules.monitor.entity.Mt5AccountRuntimeStateEntity;
 import com.zyc.copier_v0.modules.monitor.repository.Mt5AccountRuntimeStateRepository;
+import java.time.Instant;
 import com.zyc.copier_v0.modules.signal.ingest.service.Mt5SignalIngestService;
 import java.math.BigDecimal;
 import java.util.HashMap;
@@ -35,6 +36,8 @@ import org.springframework.test.web.servlet.MvcResult;
         "copier.account-config.route-cache.backend=log",
         "copier.mt5.signal-ingest.bearer-token=test-token",
         "copier.mt5.signal-ingest.dedup-backend=memory",
+        "copier.monitor.runtime-state.backend=database",
+        "copier.monitor.runtime-state.funds-stale-after=PT30S",
         "copier.monitor.session-registry.backend=memory",
         "copier.mt5.follower-exec.realtime-dispatch.backend=local"
 })
@@ -180,6 +183,41 @@ class CopyEngineIntegrationTest {
                 .isEqualByComparingTo("1");
         org.assertj.core.api.Assertions.assertThat(finalCloseDispatch.path("closeAll").asBoolean())
                 .isTrue();
+    }
+
+    @Test
+    void shouldRejectBalanceRatioWhenFollowerFundsSnapshotIsStale() throws Exception {
+        long masterLogin = 921101L;
+        long followerLogin = 921102L;
+        String server = "Broker-Live";
+
+        Long masterAccountId = bindAccount(9011L, "MASTER", server, masterLogin);
+        Long followerAccountId = bindAccount(9011L, "FOLLOWER", server, followerLogin);
+
+        saveRiskRule(followerAccountId, null, 5.00, null, null);
+        createRelation(masterAccountId, followerAccountId, "BALANCE_RATIO");
+        saveRuntimeState(
+                followerAccountId,
+                followerLogin,
+                server,
+                "5000",
+                "5000",
+                Instant.parse("2026-03-21T10:00:00Z")
+        );
+
+        mt5SignalIngestService.registerConnection("copy-test-session-stale", "trace-stale");
+        mt5SignalIngestService.ingest("copy-test-session-stale", "trace-stale",
+                "{\"type\":\"DEAL\",\"event_id\":\"921101-DEAL-21101\",\"login\":921101,\"server\":\"Broker-Live\",\"deal\":21101,\"order\":21102,\"position\":21103,\"symbol\":\"XAUUSD\",\"action\":\"BUY OPEN\",\"volume\":0.05,\"price\":3025.12,\"deal_type\":0,\"entry\":0,\"magic\":0,\"comment\":\"\",\"time\":\"2026.03.21 15:25:01\",\"account_balance\":2000.0,\"account_equity\":2000.0}");
+
+        mockMvc.perform(get("/api/execution-commands").param("masterEventId", "921101-DEAL-21101"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].status").value("REJECTED"))
+                .andExpect(jsonPath("$[0].rejectReason").value("ACCOUNT_FUNDS_UNAVAILABLE"))
+                .andExpect(jsonPath("$[0].rejectMessage").value(org.hamcrest.Matchers.containsString("stale")));
+
+        mockMvc.perform(get("/api/execution-commands/dispatches").param("masterEventId", "921101-DEAL-21101"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 
     @Test
@@ -378,14 +416,15 @@ class CopyEngineIntegrationTest {
         Long masterAccountId = bindAccount(9006L, "MASTER", server, masterLogin);
         Long followerAccountId = bindAccount(9006L, "FOLLOWER", server, followerLogin);
 
-        saveRiskRule(followerAccountId, null, 5.00, 0.50, null, null, false, false);
+        saveRiskRule(followerAccountId, null, 5.00, 1.00, null, null, false, false);
         createRelation(masterAccountId, followerAccountId, "BALANCE_RATIO");
+        saveRuntimeState(followerAccountId, followerLogin, server, "1500", "1400");
 
         mt5SignalIngestService.registerConnection("copy-test-session-6", "trace-6");
         mt5SignalIngestService.ingest("copy-test-session-6", "trace-6",
-                "{\"type\":\"ORDER\",\"event\":\"ORDER_ADD\",\"scope\":\"ACTIVE\",\"event_id\":\"960001-ORDER_ADD-60001\",\"login\":960001,\"server\":\"Broker-Live\",\"order\":60001,\"symbol\":\"EURUSD\",\"order_type\":2,\"order_state\":1,\"vol_init\":2.0000,\"vol_cur\":2.0000,\"price_open\":1.08100,\"sl\":1.07900,\"tp\":1.08900,\"magic\":11,\"comment\":\"pending-add\",\"time_setup\":\"2026.03.20 15:36:00\",\"time_done\":\"1970.01.01 00:00:00\"}");
+                "{\"type\":\"ORDER\",\"event\":\"ORDER_ADD\",\"scope\":\"ACTIVE\",\"event_id\":\"960001-ORDER_ADD-60001\",\"login\":960001,\"server\":\"Broker-Live\",\"order\":60001,\"symbol\":\"EURUSD\",\"order_type\":2,\"order_state\":1,\"vol_init\":2.0000,\"vol_cur\":2.0000,\"price_open\":1.08100,\"sl\":1.07900,\"tp\":1.08900,\"magic\":11,\"comment\":\"pending-add\",\"time_setup\":\"2026.03.20 15:36:00\",\"time_done\":\"1970.01.01 00:00:00\",\"account_balance\":3000.0,\"account_equity\":2900.0}");
         mt5SignalIngestService.ingest("copy-test-session-6", "trace-6",
-                "{\"type\":\"ORDER\",\"event\":\"ORDER_UPDATE\",\"scope\":\"ACTIVE\",\"event_id\":\"960001-ORDER_UPDATE-60001\",\"login\":960001,\"server\":\"Broker-Live\",\"order\":60001,\"symbol\":\"EURUSD\",\"order_type\":2,\"order_state\":1,\"vol_init\":2.0000,\"vol_cur\":1.5000,\"price_open\":1.08200,\"sl\":1.08000,\"tp\":1.09000,\"magic\":11,\"comment\":\"pending-update\",\"time_setup\":\"2026.03.20 15:36:10\",\"time_done\":\"1970.01.01 00:00:00\"}");
+                "{\"type\":\"ORDER\",\"event\":\"ORDER_UPDATE\",\"scope\":\"ACTIVE\",\"event_id\":\"960001-ORDER_UPDATE-60001\",\"login\":960001,\"server\":\"Broker-Live\",\"order\":60001,\"symbol\":\"EURUSD\",\"order_type\":2,\"order_state\":1,\"vol_init\":2.0000,\"vol_cur\":1.5000,\"price_open\":1.08200,\"sl\":1.08000,\"tp\":1.09000,\"magic\":11,\"comment\":\"pending-update\",\"time_setup\":\"2026.03.20 15:36:10\",\"time_done\":\"1970.01.01 00:00:00\",\"account_balance\":3000.0,\"account_equity\":2900.0}");
         mt5SignalIngestService.ingest("copy-test-session-6", "trace-6",
                 "{\"type\":\"ORDER\",\"event\":\"ORDER_DELETE\",\"scope\":\"HISTORY\",\"event_id\":\"960001-ORDER_DELETE-60001\",\"login\":960001,\"server\":\"Broker-Live\",\"order\":60001,\"symbol\":\"EURUSD\",\"order_type\":2,\"order_state\":4,\"vol_init\":2.0000,\"vol_cur\":0.0000,\"price_open\":1.08200,\"sl\":1.08000,\"tp\":1.09000,\"magic\":11,\"comment\":\"pending-delete\",\"time_setup\":\"2026.03.20 15:36:10\",\"time_done\":\"2026.03.20 15:37:00\"}");
 
@@ -527,6 +566,17 @@ class CopyEngineIntegrationTest {
             String balance,
             String equity
     ) {
+        saveRuntimeState(accountId, login, server, balance, equity, Instant.now());
+    }
+
+    private void saveRuntimeState(
+            Long accountId,
+            long login,
+            String server,
+            String balance,
+            String equity,
+            Instant activityAt
+    ) {
         Mt5AccountRuntimeStateEntity state = runtimeStateRepository.findByAccountId(accountId)
                 .orElseGet(Mt5AccountRuntimeStateEntity::new);
         state.setAccountId(accountId);
@@ -536,6 +586,9 @@ class CopyEngineIntegrationTest {
         state.setConnectionStatus(Mt5ConnectionStatus.CONNECTED);
         state.setBalance(new BigDecimal(balance));
         state.setEquity(new BigDecimal(equity));
+        state.setLastHelloAt(activityAt);
+        state.setLastHeartbeatAt(activityAt);
+        state.setLastSignalAt(activityAt);
         runtimeStateRepository.save(state);
     }
 

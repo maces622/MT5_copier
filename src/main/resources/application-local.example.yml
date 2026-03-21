@@ -37,6 +37,13 @@ copier:
         channel: copy:follower:dispatch
   monitor:
     heartbeat-stale-after: PT10S
+    runtime-state:
+      backend: redis
+      key-prefix: copy:runtime
+      database-sync-interval: PT30S
+      funds-stale-after: PT30S
+      require-fresh-funds-for-ratio: true
+      warmup-on-startup: true
     session-registry:
       backend: redis
       key-prefix: copy:ws

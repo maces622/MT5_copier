@@ -17,6 +17,12 @@ Current scope:
 5. Accept `ACK` and `FAIL` callbacks and write dispatch status back
 6. Provide an MT5 follower EA that can run in dry-run mode or submit real `OrderSend` requests
 
+## Terminology
+
+1. `node` means one Java service instance.
+2. A local single-process setup is a single-node deployment.
+3. In a multi-node deployment, different follower websocket connections may land on different nodes.
+
 ## WebSocket Endpoint
 
 Path:
@@ -34,6 +40,8 @@ Config keys:
 2. `copier.mt5.follower-exec.bearer-token`
 3. `copier.mt5.follower-exec.allow-query-token`
 4. `copier.mt5.follower-exec.heartbeat-stale-after`
+5. `copier.mt5.follower-exec.realtime-dispatch.backend`
+6. `copier.mt5.follower-exec.realtime-dispatch.channel`
 
 ## Inbound Protocol
 
@@ -128,6 +136,20 @@ Envelope example:
 
 Sent after dispatch status is committed to the database.
 
+## Realtime Dispatch Coordination
+
+### Single-node
+
+1. New dispatches are pushed directly through the current JVM's in-memory `liveSessions`.
+2. Redis pub/sub is not required for normal local integration testing.
+
+### Multi-node
+
+1. Session metadata can be shared through the Redis-backed session registry.
+2. The actual `WebSocketSession` object still lives only in the JVM that accepted the connection.
+3. Redis pub/sub is used only as a notification bus so the node that owns the websocket can push the dispatch.
+4. `follower_dispatch_outbox` in the database remains the source of truth.
+
 ## MT5 Follower EA
 
 Reference:
@@ -154,13 +176,16 @@ Current EA behavior:
 
 ## Current Limits
 
-1. Real execution is implemented in the MT5 EA, but it is still best-effort and not production-hardened
-2. Pending `BUY_STOP_LIMIT` and `SELL_STOP_LIMIT` are not supported yet
-3. Local position/order mappings are only rebuilt from live MT5 comments; no separate durable mapping store exists yet
-4. No margin pre-check, no broker-side slippage model, and no retry/backoff model are implemented yet
-5. No symbol remapping is implemented yet
+1. Real execution is implemented in the MT5 EA, but it is still best-effort and not production-hardened.
+2. Pending `BUY_STOP_LIMIT` and `SELL_STOP_LIMIT` are not supported yet.
+3. Local position/order mappings are only rebuilt from live MT5 comments; no separate durable mapping store exists yet.
+4. No margin pre-check, no broker-side slippage model, and no retry/backoff model are implemented yet.
+5. Symbol remapping is generated in Java dispatch payloads, but final execution still depends on the follower EA accepting the mapped target symbol.
+6. Cross-node realtime push currently uses Redis pub/sub notification only; there is no durable claim/lease or compensation worker yet.
 
 Recommended safety default:
 
-1. Keep `ExecutionMode=EXECUTION_DRY_RUN` during protocol testing
-2. Switch to `EXECUTION_REAL` only after the account binding, route setup, and symbol checks are validated
+1. Keep `ExecutionMode=EXECUTION_DRY_RUN` during protocol testing.
+2. For local single-node testing, prefer `copier.mt5.follower-exec.realtime-dispatch.backend=local`.
+3. Switch to `EXECUTION_REAL` only after the account binding, route setup, and symbol checks are validated.
+4. Enable `copier.mt5.follower-exec.realtime-dispatch.backend=redis` only when validating multi-node realtime push behavior.

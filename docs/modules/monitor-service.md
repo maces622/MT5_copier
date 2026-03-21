@@ -1,74 +1,97 @@
-# 仓位与资产监控服务
+# Monitor Service
 
-## 1. 职责
+## Goal
 
-Monitor Service 负责把执行结果和账户状态变成可查询、可告警、可推送的监控视图。
+This module turns MT5 signal activity, runtime connection state, and dispatch execution state into queryable monitoring views.
 
-核心职责：
+Current code scope:
 
-1. 聚合账户净值、余额、保证金
-2. 聚合持仓和历史订单
-3. 计算浮盈、已实现盈亏、回撤
-4. 输出前端盯盘视图
-5. 触发风险告警
+1. Persist accepted MT5 signal audit records into MySQL
+2. Maintain MT5 account runtime state in a Redis-first store
+3. Expose aggregated account monitoring APIs
+4. Expose MT5 websocket session views
+5. Expose follower websocket session views through the follower-exec module
 
-## 2. 输入
+## Current Runtime-State Design
 
-建议消费：
+### Source of truth
 
-1. `signal.equity.v1`
-2. `execution.result.v1`
-3. `signal.order.v1`
-4. `monitor.alert.v1`
+1. Signal audit remains in MySQL
+2. Runtime-state hot data is Redis-first
+3. MySQL keeps throttled runtime-state snapshots and disconnect-time forced persistence
+4. Redis runtime-state is never treated as business truth for core config or execution history
 
-## 3. 存储分层
+### Runtime-state keys
 
-### 3.1 Redis
+1. `copy:runtime:state:{server}:{login}`
+2. `copy:runtime:account:{accountId}`
+3. `copy:runtime:index`
+4. `copy:runtime:db-sync:{server}:{login}`
 
-存放实时快照：
+### Write path
 
-1. `account:equity:{accountId}`
-2. `position:snapshot:{accountId}`
-3. `risk:drawdown:{accountId}`
+1. MT5 master `HELLO / HEARTBEAT / DEAL / ORDER` updates runtime-state through a unified store
+2. Follower `HELLO / HEARTBEAT` updates runtime-state through the same store
+3. Writes go to Redis first
+4. Database persistence is throttled by `copier.monitor.runtime-state.database-sync-interval`
+5. Disconnect events force a database snapshot write immediately
 
-### 3.2 MySQL
+### Read path
 
-存放持久化事实：
+1. `GET /api/monitor/runtime-states` reads the unified runtime-state store
+2. `GET /api/monitor/accounts/overview` merges account config, runtime-state, and dispatch counters
+3. `GET /api/monitor/ws-sessions` merges websocket session registry with runtime-state
+4. Copy engine balance/equity scaling also reads follower funds from the runtime-state store
 
-1. `account_equity_history`
-2. `position_history`
-3. `order_history`
-4. `deal_history`
-5. `risk_alert_history`
+### Freshness gate for ratio-copy
 
-## 4. 查询接口
+1. `BALANCE_RATIO` and `EQUITY_RATIO` no longer silently fall back to `1.0` when follower funds are missing
+2. Copy engine checks runtime-state freshness before using follower balance/equity
+3. Freshness is controlled by `copier.monitor.runtime-state.funds-stale-after`
+4. The gate can be disabled by `copier.monitor.runtime-state.require-fresh-funds-for-ratio=false`, but the default is `true`
+5. After Redis restore, stale runtime-state must not be trusted for real sizing until fresh `HELLO` or `HEARTBEAT` arrives
 
-建议第一阶段提供：
+## Available APIs
 
-1. `GET /monitor/accounts/{accountId}/equity`
-2. `GET /monitor/accounts/{accountId}/positions`
-3. `GET /monitor/accounts/{accountId}/orders`
-4. `GET /monitor/accounts/{accountId}/alerts`
+1. `GET /api/monitor/runtime-states`
+2. `GET /api/monitor/accounts/overview`
+3. `GET /api/monitor/ws-sessions`
+4. `GET /api/monitor/accounts/{accountId}/signals`
+5. `GET /api/monitor/signals?accountKey=...`
 
-## 5. 计算原则
+## Config Keys
 
-1. 实时页面优先读 Redis 快照。
-2. 历史统计优先读 MySQL 聚合。
-3. 如果 Redis 快照丢失，可以通过最近事件重建。
+1. `copier.monitor.heartbeat-stale-after`
+2. `copier.monitor.runtime-state.backend`
+3. `copier.monitor.runtime-state.key-prefix`
+4. `copier.monitor.runtime-state.database-sync-interval`
+5. `copier.monitor.runtime-state.funds-stale-after`
+6. `copier.monitor.runtime-state.require-fresh-funds-for-ratio`
+7. `copier.monitor.runtime-state.warmup-on-startup`
+8. `copier.monitor.session-registry.backend`
+9. `copier.monitor.session-registry.key-prefix`
+10. `copier.monitor.session-registry.ttl`
 
-## 6. 告警策略
+## Local Recommendation
 
-第一阶段建议支持：
+For local single-node integration:
 
-1. 回撤超阈值
-2. 保证金不足
-3. 跟单失败
-4. MT5 连接异常
+1. `copier.monitor.runtime-state.backend=redis`
+2. `copier.monitor.runtime-state.funds-stale-after=PT30S`
+3. `copier.monitor.runtime-state.require-fresh-funds-for-ratio=true`
+4. `copier.monitor.session-registry.backend=redis` or `memory`
+5. `copier.mt5.follower-exec.realtime-dispatch.backend=local`
 
-告警事件不直接在查询接口内计算，而是由消费链路异步生成。
+## Backup / Recovery Notes
 
-## 7. 第一阶段实现重点
+1. MariaDB is still the source of truth for config, command history, outbox, and audit
+2. Redis runtime-state is recoverable hot state, not authoritative history
+3. After Redis restore, clear `copy:ws:*` and `copy:signal:dedup:*`
+4. If restored runtime-state is older than `funds-stale-after`, ratio-copy should stay blocked until fresh heartbeat arrives
+5. Full backup/recovery workflow is documented in [../operations/redis-backup-recovery.md](../operations/redis-backup-recovery.md)
 
-1. 做好账户实时快照模型
-2. 打通执行结果到监控的入库链路
-3. 为前端盯盘页面提供稳定查询接口
+## Current Limits
+
+1. Runtime-state database sync is throttled inline, not handled by a dedicated async flush worker
+2. Signal audit is still DB-first and is not buffered through Redis
+3. Follower position inventory reconciliation and broker-side account reconciliation are not implemented yet

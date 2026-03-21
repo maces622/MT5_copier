@@ -29,6 +29,7 @@ import org.springframework.test.web.servlet.MvcResult;
         "copier.account-config.route-cache.backend=log",
         "copier.mt5.signal-ingest.bearer-token=test-token",
         "copier.mt5.signal-ingest.dedup-backend=memory",
+        "copier.monitor.runtime-state.backend=database",
         "copier.monitor.session-registry.backend=memory",
         "copier.mt5.follower-exec.realtime-dispatch.backend=local",
         "copier.copy-engine.slippage.enabled=true"

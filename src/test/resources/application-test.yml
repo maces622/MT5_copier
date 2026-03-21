@@ -19,5 +19,9 @@ copier:
       realtime-dispatch:
         backend: local
   monitor:
+    runtime-state:
+      backend: database
+      funds-stale-after: PT30S
+      require-fresh-funds-for-ratio: true
     session-registry:
       backend: memory

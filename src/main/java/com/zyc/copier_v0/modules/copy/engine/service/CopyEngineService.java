@@ -24,7 +24,8 @@ import com.zyc.copier_v0.modules.copy.engine.repository.ExecutionCommandReposito
 import com.zyc.copier_v0.modules.copy.engine.repository.FollowerDispatchOutboxRepository;
 import com.zyc.copier_v0.modules.copy.engine.slippage.DispatchSlippagePolicy;
 import com.zyc.copier_v0.modules.copy.engine.slippage.DispatchSlippagePolicyResolver;
-import com.zyc.copier_v0.modules.monitor.repository.Mt5AccountRuntimeStateRepository;
+import com.zyc.copier_v0.modules.monitor.service.Mt5AccountRuntimeStateSnapshot;
+import com.zyc.copier_v0.modules.monitor.service.Mt5AccountRuntimeStateStore;
 import com.zyc.copier_v0.modules.signal.ingest.domain.Mt5SignalType;
 import com.zyc.copier_v0.modules.signal.ingest.domain.NormalizedMt5Signal;
 import com.zyc.copier_v0.modules.signal.ingest.event.Mt5SignalAcceptedEvent;
@@ -56,7 +57,7 @@ public class CopyEngineService {
     private final ExecutionCommandRepository executionCommandRepository;
     private final FollowerDispatchOutboxRepository followerDispatchOutboxRepository;
     private final DispatchSlippagePolicyResolver dispatchSlippagePolicyResolver;
-    private final Mt5AccountRuntimeStateRepository runtimeStateRepository;
+    private final Mt5AccountRuntimeStateStore runtimeStateStore;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher applicationEventPublisher;
 
@@ -65,7 +66,7 @@ public class CopyEngineService {
             ExecutionCommandRepository executionCommandRepository,
             FollowerDispatchOutboxRepository followerDispatchOutboxRepository,
             DispatchSlippagePolicyResolver dispatchSlippagePolicyResolver,
-            Mt5AccountRuntimeStateRepository runtimeStateRepository,
+            Mt5AccountRuntimeStateStore runtimeStateStore,
             ObjectMapper objectMapper,
             ApplicationEventPublisher applicationEventPublisher
     ) {
@@ -73,7 +74,7 @@ public class CopyEngineService {
         this.executionCommandRepository = executionCommandRepository;
         this.followerDispatchOutboxRepository = followerDispatchOutboxRepository;
         this.dispatchSlippagePolicyResolver = dispatchSlippagePolicyResolver;
-        this.runtimeStateRepository = runtimeStateRepository;
+        this.runtimeStateStore = runtimeStateStore;
         this.objectMapper = objectMapper;
         this.applicationEventPublisher = applicationEventPublisher;
     }
@@ -417,9 +418,17 @@ public class CopyEngineService {
                 if (configuredRiskRatio == null) {
                     return Rejection.rejected(ExecutionRejectReason.RATIO_MISSING, "Configured ratio must be positive", null);
                 }
+                AccountScaleResolution scaleResolution = resolveAccountScale(copyMode, signalPayload, followerAccountId);
+                if (!scaleResolution.ready()) {
+                    return Rejection.rejected(
+                            ExecutionRejectReason.ACCOUNT_FUNDS_UNAVAILABLE,
+                            scaleResolution.message(),
+                            null
+                    );
+                }
                 requestedVolume = masterVolume
                         .multiply(configuredRiskRatio)
-                        .multiply(resolveAccountScaleRatio(copyMode, signalPayload, followerAccountId));
+                        .multiply(scaleResolution.scaleRatio());
                 break;
             case FOLLOW_MASTER:
                 requestedVolume = masterVolume;
@@ -660,9 +669,14 @@ public class CopyEngineService {
         putNullableInteger(payload, "masterOrderType", readInteger(signal.getPayload(), "order_type"));
         putNullableInteger(payload, "masterOrderState", readInteger(signal.getPayload(), "order_state"));
         putNullableBigDecimal(payload, "configuredRiskRatio", resolveConfiguredRiskRatioOrDefault(command.getCopyMode(), follower.getRisk()));
-        putNullableBigDecimal(payload, "accountScaleRatio", resolveAccountScaleRatio(command.getCopyMode(), signal.getPayload(), command.getFollowerAccountId()));
-        putNullableBigDecimal(payload, "masterFunds", resolveMasterFunds(command.getCopyMode(), signal.getPayload()));
-        putNullableBigDecimal(payload, "followerFunds", resolveFollowerFunds(command.getCopyMode(), command.getFollowerAccountId()));
+        AccountScaleResolution scaleResolution = resolveAccountScale(
+                command.getCopyMode(),
+                signal.getPayload(),
+                command.getFollowerAccountId()
+        );
+        putNullableBigDecimal(payload, "accountScaleRatio", scaleResolution.scaleRatio());
+        putNullableBigDecimal(payload, "masterFunds", scaleResolution.masterFunds());
+        putNullableBigDecimal(payload, "followerFunds", scaleResolution.followerFunds());
 
         ObjectNode slippageNode = payload.putObject("slippagePolicy");
         slippageNode.put("enabled", slippageEnabled);
@@ -814,19 +828,7 @@ public class CopyEngineService {
     }
 
     private BigDecimal resolveAccountScaleRatio(CopyMode copyMode, JsonNode signalPayload, Long followerAccountId) {
-        if (copyMode != CopyMode.BALANCE_RATIO && copyMode != CopyMode.EQUITY_RATIO) {
-            return null;
-        }
-
-        BigDecimal masterFunds = resolveMasterFunds(copyMode, signalPayload);
-        BigDecimal followerFunds = resolveFollowerFunds(copyMode, followerAccountId);
-        if (masterFunds == null
-                || followerFunds == null
-                || masterFunds.compareTo(BigDecimal.ZERO) <= 0
-                || followerFunds.compareTo(BigDecimal.ZERO) <= 0) {
-            return BigDecimal.ONE;
-        }
-        return followerFunds.divide(masterFunds, 8, RoundingMode.HALF_UP);
+        return resolveAccountScale(copyMode, signalPayload, followerAccountId).scaleRatio();
     }
 
     private BigDecimal resolveMasterFunds(CopyMode copyMode, JsonNode signalPayload) {
@@ -843,17 +845,80 @@ public class CopyEngineService {
         if (followerAccountId == null) {
             return null;
         }
-        return runtimeStateRepository.findByAccountId(followerAccountId)
-                .map(state -> {
-                    if (copyMode == CopyMode.BALANCE_RATIO) {
-                        return state.getBalance();
-                    }
-                    if (copyMode == CopyMode.EQUITY_RATIO) {
-                        return state.getEquity();
-                    }
-                    return null;
-                })
+        return resolveFollowerRuntimeState(followerAccountId)
+                .map(state -> extractFollowerFunds(copyMode, state))
                 .orElse(null);
+    }
+
+    private AccountScaleResolution resolveAccountScale(CopyMode copyMode, JsonNode signalPayload, Long followerAccountId) {
+        if (copyMode != CopyMode.BALANCE_RATIO && copyMode != CopyMode.EQUITY_RATIO) {
+            return AccountScaleResolution.notRequired();
+        }
+
+        BigDecimal masterFunds = resolveMasterFunds(copyMode, signalPayload);
+        if (masterFunds == null || masterFunds.compareTo(BigDecimal.ZERO) <= 0) {
+            return AccountScaleResolution.unavailable(masterFundsLabel(copyMode) + " is missing or invalid on master signal");
+        }
+
+        if (followerAccountId == null) {
+            return AccountScaleResolution.unavailable("Follower account id is missing for ratio-based scaling");
+        }
+
+        Optional<Mt5AccountRuntimeStateSnapshot> followerState = runtimeStateStore.findByAccountId(followerAccountId);
+        if (!followerState.isPresent()) {
+            return AccountScaleResolution.unavailable(
+                    followerFundsLabel(copyMode) + " snapshot is missing for follower account " + followerAccountId
+            );
+        }
+        if (!runtimeStateStore.isFreshForFunds(followerState.get())) {
+            return AccountScaleResolution.unavailable(
+                    followerFundsLabel(copyMode) + " snapshot is stale for follower account " + followerAccountId
+            );
+        }
+
+        BigDecimal followerFunds = extractFollowerFunds(copyMode, followerState.get());
+        if (followerFunds == null || followerFunds.compareTo(BigDecimal.ZERO) <= 0) {
+            return AccountScaleResolution.unavailable(
+                    followerFundsLabel(copyMode) + " is missing or invalid on follower runtime-state"
+            );
+        }
+
+        return AccountScaleResolution.ready(
+                followerFunds.divide(masterFunds, 8, RoundingMode.HALF_UP),
+                masterFunds,
+                followerFunds
+        );
+    }
+
+    private Optional<Mt5AccountRuntimeStateSnapshot> resolveFollowerRuntimeState(Long followerAccountId) {
+        return runtimeStateStore.findFreshByAccountId(followerAccountId);
+    }
+
+    private BigDecimal extractFollowerFunds(CopyMode copyMode, Mt5AccountRuntimeStateSnapshot state) {
+        if (state == null) {
+            return null;
+        }
+        if (copyMode == CopyMode.BALANCE_RATIO) {
+            return state.getBalance();
+        }
+        if (copyMode == CopyMode.EQUITY_RATIO) {
+            return state.getEquity();
+        }
+        return null;
+    }
+
+    private String masterFundsLabel(CopyMode copyMode) {
+        if (copyMode == CopyMode.EQUITY_RATIO) {
+            return "Master equity";
+        }
+        return "Master balance";
+    }
+
+    private String followerFundsLabel(CopyMode copyMode) {
+        if (copyMode == CopyMode.EQUITY_RATIO) {
+            return "Follower equity";
+        }
+        return "Follower balance";
     }
 
     private BigDecimal resolveCloseRatio(JsonNode signalPayload) {
@@ -959,6 +1024,60 @@ public class CopyEngineService {
 
         String followerAction() {
             return followerAction;
+        }
+    }
+
+    private static final class AccountScaleResolution {
+        private final boolean ready;
+        private final BigDecimal scaleRatio;
+        private final BigDecimal masterFunds;
+        private final BigDecimal followerFunds;
+        private final String message;
+
+        private AccountScaleResolution(
+                boolean ready,
+                BigDecimal scaleRatio,
+                BigDecimal masterFunds,
+                BigDecimal followerFunds,
+                String message
+        ) {
+            this.ready = ready;
+            this.scaleRatio = scaleRatio;
+            this.masterFunds = masterFunds;
+            this.followerFunds = followerFunds;
+            this.message = message;
+        }
+
+        static AccountScaleResolution notRequired() {
+            return new AccountScaleResolution(true, null, null, null, null);
+        }
+
+        static AccountScaleResolution ready(BigDecimal scaleRatio, BigDecimal masterFunds, BigDecimal followerFunds) {
+            return new AccountScaleResolution(true, scaleRatio, masterFunds, followerFunds, null);
+        }
+
+        static AccountScaleResolution unavailable(String message) {
+            return new AccountScaleResolution(false, null, null, null, message);
+        }
+
+        boolean ready() {
+            return ready;
+        }
+
+        BigDecimal scaleRatio() {
+            return scaleRatio;
+        }
+
+        BigDecimal masterFunds() {
+            return masterFunds;
+        }
+
+        BigDecimal followerFunds() {
+            return followerFunds;
+        }
+
+        String message() {
+            return message;
         }
     }
 

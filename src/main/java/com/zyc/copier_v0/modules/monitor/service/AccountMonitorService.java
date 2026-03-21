@@ -8,8 +8,8 @@ import com.zyc.copier_v0.modules.account.config.domain.CopyRelationStatus;
 import com.zyc.copier_v0.modules.account.config.domain.Mt5AccountRole;
 import com.zyc.copier_v0.modules.account.config.entity.CopyRelationEntity;
 import com.zyc.copier_v0.modules.account.config.entity.Mt5AccountEntity;
-import com.zyc.copier_v0.modules.account.config.repository.Mt5AccountRepository;
 import com.zyc.copier_v0.modules.account.config.repository.CopyRelationRepository;
+import com.zyc.copier_v0.modules.account.config.repository.Mt5AccountRepository;
 import com.zyc.copier_v0.modules.copy.engine.domain.FollowerDispatchStatus;
 import com.zyc.copier_v0.modules.copy.engine.entity.FollowerDispatchOutboxEntity;
 import com.zyc.copier_v0.modules.copy.engine.repository.FollowerDispatchOutboxRepository;
@@ -19,9 +19,7 @@ import com.zyc.copier_v0.modules.monitor.api.Mt5SignalRecordResponse;
 import com.zyc.copier_v0.modules.monitor.api.Mt5WsSessionResponse;
 import com.zyc.copier_v0.modules.monitor.config.MonitorProperties;
 import com.zyc.copier_v0.modules.monitor.domain.Mt5ConnectionStatus;
-import com.zyc.copier_v0.modules.monitor.entity.Mt5AccountRuntimeStateEntity;
 import com.zyc.copier_v0.modules.monitor.entity.Mt5SignalRecordEntity;
-import com.zyc.copier_v0.modules.monitor.repository.Mt5AccountRuntimeStateRepository;
 import com.zyc.copier_v0.modules.monitor.repository.Mt5SignalRecordRepository;
 import com.zyc.copier_v0.modules.signal.ingest.domain.Mt5SessionContext;
 import com.zyc.copier_v0.modules.signal.ingest.domain.NormalizedMt5Signal;
@@ -46,7 +44,7 @@ import org.springframework.util.StringUtils;
 public class AccountMonitorService {
 
     private final Mt5SignalRecordRepository signalRecordRepository;
-    private final Mt5AccountRuntimeStateRepository runtimeStateRepository;
+    private final Mt5AccountRuntimeStateStore runtimeStateStore;
     private final Mt5AccountRepository mt5AccountRepository;
     private final CopyRelationRepository copyRelationRepository;
     private final FollowerDispatchOutboxRepository followerDispatchOutboxRepository;
@@ -57,7 +55,7 @@ public class AccountMonitorService {
 
     public AccountMonitorService(
             Mt5SignalRecordRepository signalRecordRepository,
-            Mt5AccountRuntimeStateRepository runtimeStateRepository,
+            Mt5AccountRuntimeStateStore runtimeStateStore,
             Mt5AccountRepository mt5AccountRepository,
             CopyRelationRepository copyRelationRepository,
             FollowerDispatchOutboxRepository followerDispatchOutboxRepository,
@@ -67,7 +65,7 @@ public class AccountMonitorService {
             MonitorProperties monitorProperties
     ) {
         this.signalRecordRepository = signalRecordRepository;
-        this.runtimeStateRepository = runtimeStateRepository;
+        this.runtimeStateStore = runtimeStateStore;
         this.mt5AccountRepository = mt5AccountRepository;
         this.copyRelationRepository = copyRelationRepository;
         this.followerDispatchOutboxRepository = followerDispatchOutboxRepository;
@@ -101,8 +99,8 @@ public class AccountMonitorService {
             return;
         }
 
-        Mt5AccountRuntimeStateEntity state = runtimeStateRepository.findByServerAndLogin(signal.getServer(), signal.getLogin())
-                .orElseGet(Mt5AccountRuntimeStateEntity::new);
+        Mt5AccountRuntimeStateSnapshot state = runtimeStateStore.findByServerAndLogin(signal.getServer(), signal.getLogin())
+                .orElseGet(Mt5AccountRuntimeStateSnapshot::new);
         state.setAccountId(accountId);
         state.setLogin(signal.getLogin());
         state.setServer(signal.getServer());
@@ -112,15 +110,17 @@ public class AccountMonitorService {
         state.setLastSignalAt(signal.getReceivedAt());
         state.setLastSignalType(signal.getType().name());
         state.setLastEventId(signal.getEventId());
-        state.setBalance(readDecimal(signal.getPayload(), "account_balance", "balance"));
-        state.setEquity(readDecimal(signal.getPayload(), "account_equity", "equity"));
+        updateFunds(state, readDecimal(signal.getPayload(), "account_balance", "balance"),
+                readDecimal(signal.getPayload(), "account_equity", "equity"));
         if ("HELLO".equals(signal.getType().name())) {
             state.setLastHelloAt(signal.getReceivedAt());
         }
         if ("HEARTBEAT".equals(signal.getType().name())) {
             state.setLastHeartbeatAt(signal.getReceivedAt());
         }
-        runtimeStateRepository.save(state);
+        state.setUpdatedAt(signal.getReceivedAt());
+        runtimeStateStore.upsert(state);
+        runtimeStateStore.maybePersist(state);
     }
 
     @EventListener
@@ -131,18 +131,25 @@ public class AccountMonitorService {
             return;
         }
 
-        runtimeStateRepository.findByServerAndLogin(sessionContext.getServer(), sessionContext.getLogin())
-                .ifPresent(state -> {
-                    state.setConnectionStatus(Mt5ConnectionStatus.DISCONNECTED);
-                    state.setLastSessionId(sessionContext.getSessionId());
-                    state.setLastSignalAt(event.getDisconnectedAt());
-                    runtimeStateRepository.save(state);
-                });
+        Mt5AccountRuntimeStateSnapshot state = runtimeStateStore.findByServerAndLogin(
+                        sessionContext.getServer(),
+                        sessionContext.getLogin()
+                )
+                .orElseGet(Mt5AccountRuntimeStateSnapshot::new);
+        state.setLogin(sessionContext.getLogin());
+        state.setServer(sessionContext.getServer());
+        state.setAccountKey(sessionContext.masterAccountKey());
+        state.setLastSessionId(sessionContext.getSessionId());
+        state.setConnectionStatus(Mt5ConnectionStatus.DISCONNECTED);
+        state.setLastSignalAt(event.getDisconnectedAt());
+        state.setUpdatedAt(event.getDisconnectedAt());
+        runtimeStateStore.upsert(state);
+        runtimeStateStore.persist(state);
     }
 
     @Transactional(readOnly = true)
     public List<Mt5RuntimeStateResponse> listRuntimeStates() {
-        return runtimeStateRepository.findAllByOrderByUpdatedAtDesc().stream()
+        return runtimeStateStore.listAll().stream()
                 .map(this::toRuntimeStateResponse)
                 .toList();
     }
@@ -157,11 +164,12 @@ public class AccountMonitorService {
             return Collections.emptyList();
         }
 
-        Map<String, Mt5AccountRuntimeStateEntity> runtimeByAccountKey = runtimeStateRepository.findAll().stream()
+        Map<String, Mt5AccountRuntimeStateSnapshot> runtimeByAccountKey = runtimeStateStore.listAll().stream()
+                .filter(entity -> StringUtils.hasText(entity.getAccountKey()))
                 .collect(Collectors.toMap(
-                        entity -> entity.getServer() + ":" + entity.getLogin(),
+                        Mt5AccountRuntimeStateSnapshot::getAccountKey,
                         Function.identity(),
-                        (left, right) -> left.getUpdatedAt().isAfter(right.getUpdatedAt()) ? left : right
+                        this::laterSnapshot
                 ));
 
         List<CopyRelationEntity> activeRelations = copyRelationRepository.findAllByStatusIn(EnumSet.of(CopyRelationStatus.ACTIVE));
@@ -204,20 +212,20 @@ public class AccountMonitorService {
                         Function.identity(),
                         (left, right) -> left
                 ));
-        List<Mt5AccountRuntimeStateEntity> runtimeStates = runtimeStateRepository.findAllByOrderByUpdatedAtDesc();
-        Map<String, Mt5AccountRuntimeStateEntity> runtimeBySessionId = runtimeStates.stream()
+        List<Mt5AccountRuntimeStateSnapshot> runtimeStates = runtimeStateStore.listAll();
+        Map<String, Mt5AccountRuntimeStateSnapshot> runtimeBySessionId = runtimeStates.stream()
                 .filter(entity -> StringUtils.hasText(entity.getLastSessionId()))
                 .collect(Collectors.toMap(
-                        Mt5AccountRuntimeStateEntity::getLastSessionId,
+                        Mt5AccountRuntimeStateSnapshot::getLastSessionId,
                         Function.identity(),
-                        (left, right) -> left
+                        this::laterSnapshot
                 ));
-        Map<String, Mt5AccountRuntimeStateEntity> runtimeByAccountKey = runtimeStates.stream()
+        Map<String, Mt5AccountRuntimeStateSnapshot> runtimeByAccountKey = runtimeStates.stream()
                 .filter(entity -> StringUtils.hasText(entity.getAccountKey()))
                 .collect(Collectors.toMap(
-                        Mt5AccountRuntimeStateEntity::getAccountKey,
+                        Mt5AccountRuntimeStateSnapshot::getAccountKey,
                         Function.identity(),
-                        (left, right) -> left
+                        this::laterSnapshot
                 ));
 
         return mt5SessionRegistry.listAll().stream()
@@ -273,7 +281,16 @@ public class AccountMonitorService {
         return null;
     }
 
-    private Mt5RuntimeStateResponse toRuntimeStateResponse(Mt5AccountRuntimeStateEntity entity) {
+    private void updateFunds(Mt5AccountRuntimeStateSnapshot state, BigDecimal balance, BigDecimal equity) {
+        if (balance != null) {
+            state.setBalance(balance);
+        }
+        if (equity != null) {
+            state.setEquity(equity);
+        }
+    }
+
+    private Mt5RuntimeStateResponse toRuntimeStateResponse(Mt5AccountRuntimeStateSnapshot entity) {
         Mt5RuntimeStateResponse response = new Mt5RuntimeStateResponse();
         response.setId(entity.getId());
         response.setAccountId(entity.getAccountId());
@@ -293,7 +310,7 @@ public class AccountMonitorService {
 
     private Mt5AccountMonitorOverviewResponse toOverviewResponse(
             Mt5AccountEntity account,
-            Mt5AccountRuntimeStateEntity runtimeState,
+            Mt5AccountRuntimeStateSnapshot runtimeState,
             Long activeFollowerCount,
             Long activeMasterCount,
             Long pendingDispatchCount,
@@ -345,12 +362,12 @@ public class AccountMonitorService {
     private Mt5WsSessionResponse toWsSessionResponse(
             Mt5SessionContext sessionContext,
             Map<String, Mt5AccountEntity> accountByAccountKey,
-            Map<String, Mt5AccountRuntimeStateEntity> runtimeBySessionId,
-            Map<String, Mt5AccountRuntimeStateEntity> runtimeByAccountKey
+            Map<String, Mt5AccountRuntimeStateSnapshot> runtimeBySessionId,
+            Map<String, Mt5AccountRuntimeStateSnapshot> runtimeByAccountKey
     ) {
         String accountKey = sessionContext.masterAccountKey();
         Mt5AccountEntity account = accountKey == null ? null : accountByAccountKey.get(accountKey);
-        Mt5AccountRuntimeStateEntity runtimeState = runtimeBySessionId.get(sessionContext.getSessionId());
+        Mt5AccountRuntimeStateSnapshot runtimeState = runtimeBySessionId.get(sessionContext.getSessionId());
         if (runtimeState == null && accountKey != null) {
             runtimeState = runtimeByAccountKey.get(accountKey);
         }
@@ -400,7 +417,7 @@ public class AccountMonitorService {
 
     private Mt5ConnectionStatus resolveSessionStatus(
             Mt5SessionContext sessionContext,
-            Mt5AccountRuntimeStateEntity runtimeState
+            Mt5AccountRuntimeStateSnapshot runtimeState
     ) {
         if (runtimeState != null) {
             return resolveEffectiveStatus(runtimeState);
@@ -411,7 +428,7 @@ public class AccountMonitorService {
         return Mt5ConnectionStatus.UNKNOWN;
     }
 
-    private Mt5ConnectionStatus resolveEffectiveStatus(Mt5AccountRuntimeStateEntity entity) {
+    private Mt5ConnectionStatus resolveEffectiveStatus(Mt5AccountRuntimeStateSnapshot entity) {
         if (entity == null) {
             return Mt5ConnectionStatus.UNKNOWN;
         }
@@ -429,5 +446,24 @@ public class AccountMonitorService {
             return Mt5ConnectionStatus.STALE;
         }
         return entity.getConnectionStatus();
+    }
+
+    private Mt5AccountRuntimeStateSnapshot laterSnapshot(
+            Mt5AccountRuntimeStateSnapshot left,
+            Mt5AccountRuntimeStateSnapshot right
+    ) {
+        if (left == null) {
+            return right;
+        }
+        if (right == null) {
+            return left;
+        }
+        if (left.getUpdatedAt() == null) {
+            return right;
+        }
+        if (right.getUpdatedAt() == null) {
+            return left;
+        }
+        return left.getUpdatedAt().isAfter(right.getUpdatedAt()) ? left : right;
     }
 }

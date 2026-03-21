@@ -38,6 +38,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
                 "copier.mt5.signal-ingest.bearer-token=test-token",
                 "copier.mt5.signal-ingest.dedup-ttl=PT10M",
                 "copier.mt5.signal-ingest.dedup-backend=memory",
+                "copier.monitor.runtime-state.backend=database",
                 "copier.monitor.session-registry.backend=memory",
                 "copier.mt5.follower-exec.realtime-dispatch.backend=local"
         }

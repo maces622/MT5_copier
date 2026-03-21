@@ -48,6 +48,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
                 "copier.mt5.signal-ingest.bearer-token=test-signal-token",
                 "copier.mt5.signal-ingest.dedup-backend=memory",
                 "copier.mt5.follower-exec.bearer-token=test-follower-token",
+                "copier.monitor.runtime-state.backend=database",
                 "copier.monitor.session-registry.backend=memory",
                 "copier.mt5.follower-exec.realtime-dispatch.backend=local",
                 "copier.mt5.follower-exec.heartbeat-stale-after=PT15S"

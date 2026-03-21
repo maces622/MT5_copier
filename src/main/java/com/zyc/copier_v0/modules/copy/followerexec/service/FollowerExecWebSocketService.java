@@ -16,8 +16,8 @@ import com.zyc.copier_v0.modules.copy.followerexec.config.FollowerExecWebSocketP
 import com.zyc.copier_v0.modules.copy.followerexec.domain.FollowerExecMessageType;
 import com.zyc.copier_v0.modules.copy.followerexec.domain.FollowerExecSessionContext;
 import com.zyc.copier_v0.modules.monitor.domain.Mt5ConnectionStatus;
-import com.zyc.copier_v0.modules.monitor.entity.Mt5AccountRuntimeStateEntity;
-import com.zyc.copier_v0.modules.monitor.repository.Mt5AccountRuntimeStateRepository;
+import com.zyc.copier_v0.modules.monitor.service.Mt5AccountRuntimeStateSnapshot;
+import com.zyc.copier_v0.modules.monitor.service.Mt5AccountRuntimeStateStore;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -45,7 +45,7 @@ public class FollowerExecWebSocketService {
     private final FollowerDispatchOutboxRepository followerDispatchOutboxRepository;
     private final FollowerExecSessionRegistry sessionRegistry;
     private final FollowerExecWebSocketProperties properties;
-    private final Mt5AccountRuntimeStateRepository runtimeStateRepository;
+    private final Mt5AccountRuntimeStateStore runtimeStateStore;
     private final ConcurrentMap<String, WebSocketSession> liveSessions = new ConcurrentHashMap<>();
 
     public FollowerExecWebSocketService(
@@ -54,14 +54,14 @@ public class FollowerExecWebSocketService {
             FollowerDispatchOutboxRepository followerDispatchOutboxRepository,
             FollowerExecSessionRegistry sessionRegistry,
             FollowerExecWebSocketProperties properties,
-            Mt5AccountRuntimeStateRepository runtimeStateRepository
+            Mt5AccountRuntimeStateStore runtimeStateStore
     ) {
         this.objectMapper = objectMapper;
         this.mt5AccountRepository = mt5AccountRepository;
         this.followerDispatchOutboxRepository = followerDispatchOutboxRepository;
         this.sessionRegistry = sessionRegistry;
         this.properties = properties;
-        this.runtimeStateRepository = runtimeStateRepository;
+        this.runtimeStateStore = runtimeStateStore;
     }
 
     public void registerConnection(String sessionId, String traceId, WebSocketSession session) {
@@ -226,8 +226,8 @@ public class FollowerExecWebSocketService {
             BigDecimal equity,
             boolean heartbeatOnly
     ) {
-        Mt5AccountRuntimeStateEntity state = runtimeStateRepository.findByAccountId(followerAccount.getId())
-                .orElseGet(Mt5AccountRuntimeStateEntity::new);
+        Mt5AccountRuntimeStateSnapshot state = runtimeStateStore.findByAccountId(followerAccount.getId())
+                .orElseGet(Mt5AccountRuntimeStateSnapshot::new);
         state.setAccountId(followerAccount.getId());
         state.setLogin(followerAccount.getMt5Login());
         state.setServer(followerAccount.getServerName());
@@ -245,19 +245,26 @@ public class FollowerExecWebSocketService {
         if (equity != null) {
             state.setEquity(equity);
         }
-        runtimeStateRepository.save(state);
+        state.setUpdatedAt(activityAt);
+        runtimeStateStore.upsert(state);
+        runtimeStateStore.maybePersist(state);
     }
 
     private void markFollowerDisconnected(FollowerExecSessionContext context) {
         if (context.getFollowerAccountId() == null) {
             return;
         }
-        runtimeStateRepository.findByAccountId(context.getFollowerAccountId())
-                .ifPresent(state -> {
-                    state.setConnectionStatus(Mt5ConnectionStatus.DISCONNECTED);
-                    state.setLastSessionId(context.getSessionId());
-                    runtimeStateRepository.save(state);
-                });
+        Mt5AccountRuntimeStateSnapshot state = runtimeStateStore.findByAccountId(context.getFollowerAccountId())
+                .orElseGet(Mt5AccountRuntimeStateSnapshot::new);
+        state.setAccountId(context.getFollowerAccountId());
+        state.setLogin(context.getLogin());
+        state.setServer(context.getServer());
+        state.setAccountKey(context.accountKey());
+        state.setLastSessionId(context.getSessionId());
+        state.setConnectionStatus(Mt5ConnectionStatus.DISCONNECTED);
+        state.setUpdatedAt(Instant.now());
+        runtimeStateStore.upsert(state);
+        runtimeStateStore.persist(state);
     }
 
     private void validateFollowerAccount(Mt5AccountEntity followerAccount) {
