@@ -16,6 +16,9 @@ import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.persistence.Version;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 
 @Entity
 @Table(
@@ -23,10 +26,13 @@ import javax.persistence.Version;
         indexes = @Index(name = "idx_mt5_account_user", columnList = "user_id"),
         uniqueConstraints = @UniqueConstraint(name = "uk_mt5_server_login", columnNames = {"server_name", "mt5_login"})
 )
+@Getter
+@Setter
 public class Mt5AccountEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Setter(AccessLevel.NONE)
     private Long id;
 
     @Column(name = "user_id", nullable = false)
@@ -56,13 +62,16 @@ public class Mt5AccountEntity {
     private AccountStatus status;
 
     @Column(name = "created_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant updatedAt;
 
     @Version
     @Column(name = "row_version", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Long rowVersion;
 
     @PrePersist
@@ -75,81 +84,5 @@ public class Mt5AccountEntity {
     @PreUpdate
     void preUpdate() {
         updatedAt = Instant.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public Long getUserId() {
-        return userId;
-    }
-
-    public void setUserId(Long userId) {
-        this.userId = userId;
-    }
-
-    public String getBrokerName() {
-        return brokerName;
-    }
-
-    public void setBrokerName(String brokerName) {
-        this.brokerName = brokerName;
-    }
-
-    public String getServerName() {
-        return serverName;
-    }
-
-    public void setServerName(String serverName) {
-        this.serverName = serverName;
-    }
-
-    public Long getMt5Login() {
-        return mt5Login;
-    }
-
-    public void setMt5Login(Long mt5Login) {
-        this.mt5Login = mt5Login;
-    }
-
-    public String getCredentialCiphertext() {
-        return credentialCiphertext;
-    }
-
-    public void setCredentialCiphertext(String credentialCiphertext) {
-        this.credentialCiphertext = credentialCiphertext;
-    }
-
-    public Integer getCredentialVersion() {
-        return credentialVersion;
-    }
-
-    public void setCredentialVersion(Integer credentialVersion) {
-        this.credentialVersion = credentialVersion;
-    }
-
-    public Mt5AccountRole getAccountRole() {
-        return accountRole;
-    }
-
-    public void setAccountRole(Mt5AccountRole accountRole) {
-        this.accountRole = accountRole;
-    }
-
-    public AccountStatus getStatus() {
-        return status;
-    }
-
-    public void setStatus(AccountStatus status) {
-        this.status = status;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }

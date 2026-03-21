@@ -19,6 +19,9 @@ import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.persistence.Version;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 
 @Entity
 @Table(
@@ -32,10 +35,13 @@ import javax.persistence.Version;
                 columnNames = {"master_account_id", "follower_account_id"}
         )
 )
+@Getter
+@Setter
 public class CopyRelationEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Setter(AccessLevel.NONE)
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
@@ -61,13 +67,16 @@ public class CopyRelationEntity {
     private Long configVersion;
 
     @Column(name = "created_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant updatedAt;
 
     @Version
     @Column(name = "row_version", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Long rowVersion;
 
     @PrePersist
@@ -80,65 +89,5 @@ public class CopyRelationEntity {
     @PreUpdate
     void preUpdate() {
         updatedAt = Instant.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public Mt5AccountEntity getMasterAccount() {
-        return masterAccount;
-    }
-
-    public void setMasterAccount(Mt5AccountEntity masterAccount) {
-        this.masterAccount = masterAccount;
-    }
-
-    public Mt5AccountEntity getFollowerAccount() {
-        return followerAccount;
-    }
-
-    public void setFollowerAccount(Mt5AccountEntity followerAccount) {
-        this.followerAccount = followerAccount;
-    }
-
-    public CopyMode getCopyMode() {
-        return copyMode;
-    }
-
-    public void setCopyMode(CopyMode copyMode) {
-        this.copyMode = copyMode;
-    }
-
-    public CopyRelationStatus getStatus() {
-        return status;
-    }
-
-    public void setStatus(CopyRelationStatus status) {
-        this.status = status;
-    }
-
-    public Integer getPriority() {
-        return priority;
-    }
-
-    public void setPriority(Integer priority) {
-        this.priority = priority;
-    }
-
-    public Long getConfigVersion() {
-        return configVersion;
-    }
-
-    public void setConfigVersion(Long configVersion) {
-        this.configVersion = configVersion;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }

@@ -15,13 +15,19 @@ import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.persistence.Version;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 
 @Entity
 @Table(name = "risk_rules", uniqueConstraints = @UniqueConstraint(name = "uk_risk_rule_account", columnNames = {"account_id"}))
+@Getter
+@Setter
 public class RiskRuleEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Setter(AccessLevel.NONE)
     private Long id;
 
     @OneToOne(fetch = FetchType.LAZY, optional = false)
@@ -65,13 +71,16 @@ public class RiskRuleEntity {
     private boolean reverseFollow;
 
     @Column(name = "created_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant updatedAt;
 
     @Version
     @Column(name = "row_version", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Long rowVersion;
 
     @PrePersist
@@ -84,121 +93,5 @@ public class RiskRuleEntity {
     @PreUpdate
     void preUpdate() {
         updatedAt = Instant.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public Mt5AccountEntity getAccount() {
-        return account;
-    }
-
-    public void setAccount(Mt5AccountEntity account) {
-        this.account = account;
-    }
-
-    public BigDecimal getMaxLot() {
-        return maxLot;
-    }
-
-    public void setMaxLot(BigDecimal maxLot) {
-        this.maxLot = maxLot;
-    }
-
-    public BigDecimal getFixedLot() {
-        return fixedLot;
-    }
-
-    public void setFixedLot(BigDecimal fixedLot) {
-        this.fixedLot = fixedLot;
-    }
-
-    public BigDecimal getBalanceRatio() {
-        return balanceRatio;
-    }
-
-    public void setBalanceRatio(BigDecimal balanceRatio) {
-        this.balanceRatio = balanceRatio;
-    }
-
-    public Integer getMaxSlippagePoints() {
-        return maxSlippagePoints;
-    }
-
-    public void setMaxSlippagePoints(Integer maxSlippagePoints) {
-        this.maxSlippagePoints = maxSlippagePoints;
-    }
-
-    public BigDecimal getMaxSlippagePips() {
-        return maxSlippagePips;
-    }
-
-    public void setMaxSlippagePips(BigDecimal maxSlippagePips) {
-        this.maxSlippagePips = maxSlippagePips;
-    }
-
-    public BigDecimal getMaxSlippagePrice() {
-        return maxSlippagePrice;
-    }
-
-    public void setMaxSlippagePrice(BigDecimal maxSlippagePrice) {
-        this.maxSlippagePrice = maxSlippagePrice;
-    }
-
-    public BigDecimal getMaxDailyLoss() {
-        return maxDailyLoss;
-    }
-
-    public void setMaxDailyLoss(BigDecimal maxDailyLoss) {
-        this.maxDailyLoss = maxDailyLoss;
-    }
-
-    public BigDecimal getMaxDrawdownPct() {
-        return maxDrawdownPct;
-    }
-
-    public void setMaxDrawdownPct(BigDecimal maxDrawdownPct) {
-        this.maxDrawdownPct = maxDrawdownPct;
-    }
-
-    public String getAllowedSymbols() {
-        return allowedSymbols;
-    }
-
-    public void setAllowedSymbols(String allowedSymbols) {
-        this.allowedSymbols = allowedSymbols;
-    }
-
-    public String getBlockedSymbols() {
-        return blockedSymbols;
-    }
-
-    public void setBlockedSymbols(String blockedSymbols) {
-        this.blockedSymbols = blockedSymbols;
-    }
-
-    public boolean isFollowTpSl() {
-        return followTpSl;
-    }
-
-    public void setFollowTpSl(boolean followTpSl) {
-        this.followTpSl = followTpSl;
-    }
-
-    public boolean isReverseFollow() {
-        return reverseFollow;
-    }
-
-    public void setReverseFollow(boolean reverseFollow) {
-        this.reverseFollow = reverseFollow;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }

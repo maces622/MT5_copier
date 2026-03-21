@@ -15,6 +15,9 @@ import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.persistence.Version;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 
 @Entity
 @Table(
@@ -25,10 +28,13 @@ import javax.persistence.Version;
                 columnNames = {"follower_account_id", "master_symbol"}
         )
 )
+@Getter
+@Setter
 public class SymbolMappingEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Setter(AccessLevel.NONE)
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
@@ -42,13 +48,16 @@ public class SymbolMappingEntity {
     private String followerSymbol;
 
     @Column(name = "created_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant updatedAt;
 
     @Version
     @Column(name = "row_version", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Long rowVersion;
 
     @PrePersist
@@ -61,41 +70,5 @@ public class SymbolMappingEntity {
     @PreUpdate
     void preUpdate() {
         updatedAt = Instant.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public Mt5AccountEntity getFollowerAccount() {
-        return followerAccount;
-    }
-
-    public void setFollowerAccount(Mt5AccountEntity followerAccount) {
-        this.followerAccount = followerAccount;
-    }
-
-    public String getMasterSymbol() {
-        return masterSymbol;
-    }
-
-    public void setMasterSymbol(String masterSymbol) {
-        this.masterSymbol = masterSymbol;
-    }
-
-    public String getFollowerSymbol() {
-        return followerSymbol;
-    }
-
-    public void setFollowerSymbol(String followerSymbol) {
-        this.followerSymbol = followerSymbol;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }

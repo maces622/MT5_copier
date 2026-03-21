@@ -16,6 +16,9 @@ import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.persistence.Version;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 
 @Entity
 @Table(
@@ -27,10 +30,13 @@ import javax.persistence.Version;
         },
         uniqueConstraints = @UniqueConstraint(name = "uk_runtime_server_login", columnNames = {"server_name", "login_no"})
 )
+@Getter
+@Setter
 public class Mt5AccountRuntimeStateEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Setter(AccessLevel.NONE)
     private Long id;
 
     @Column(name = "account_id")
@@ -74,13 +80,16 @@ public class Mt5AccountRuntimeStateEntity {
     private BigDecimal equity;
 
     @Column(name = "created_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant updatedAt;
 
     @Version
     @Column(name = "row_version", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Long rowVersion;
 
     @PrePersist
@@ -93,121 +102,5 @@ public class Mt5AccountRuntimeStateEntity {
     @PreUpdate
     void preUpdate() {
         updatedAt = Instant.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public Long getAccountId() {
-        return accountId;
-    }
-
-    public void setAccountId(Long accountId) {
-        this.accountId = accountId;
-    }
-
-    public Long getLogin() {
-        return login;
-    }
-
-    public void setLogin(Long login) {
-        this.login = login;
-    }
-
-    public String getServer() {
-        return server;
-    }
-
-    public void setServer(String server) {
-        this.server = server;
-    }
-
-    public String getAccountKey() {
-        return accountKey;
-    }
-
-    public void setAccountKey(String accountKey) {
-        this.accountKey = accountKey;
-    }
-
-    public String getLastSessionId() {
-        return lastSessionId;
-    }
-
-    public void setLastSessionId(String lastSessionId) {
-        this.lastSessionId = lastSessionId;
-    }
-
-    public Mt5ConnectionStatus getConnectionStatus() {
-        return connectionStatus;
-    }
-
-    public void setConnectionStatus(Mt5ConnectionStatus connectionStatus) {
-        this.connectionStatus = connectionStatus;
-    }
-
-    public Instant getLastHelloAt() {
-        return lastHelloAt;
-    }
-
-    public void setLastHelloAt(Instant lastHelloAt) {
-        this.lastHelloAt = lastHelloAt;
-    }
-
-    public Instant getLastHeartbeatAt() {
-        return lastHeartbeatAt;
-    }
-
-    public void setLastHeartbeatAt(Instant lastHeartbeatAt) {
-        this.lastHeartbeatAt = lastHeartbeatAt;
-    }
-
-    public Instant getLastSignalAt() {
-        return lastSignalAt;
-    }
-
-    public void setLastSignalAt(Instant lastSignalAt) {
-        this.lastSignalAt = lastSignalAt;
-    }
-
-    public String getLastSignalType() {
-        return lastSignalType;
-    }
-
-    public void setLastSignalType(String lastSignalType) {
-        this.lastSignalType = lastSignalType;
-    }
-
-    public String getLastEventId() {
-        return lastEventId;
-    }
-
-    public void setLastEventId(String lastEventId) {
-        this.lastEventId = lastEventId;
-    }
-
-    public BigDecimal getBalance() {
-        return balance;
-    }
-
-    public void setBalance(BigDecimal balance) {
-        this.balance = balance;
-    }
-
-    public BigDecimal getEquity() {
-        return equity;
-    }
-
-    public void setEquity(BigDecimal equity) {
-        this.equity = equity;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }

@@ -20,6 +20,9 @@ import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.persistence.Version;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 
 @Entity
 @Table(
@@ -35,10 +38,13 @@ import javax.persistence.Version;
                 columnNames = {"master_event_id", "follower_account_id"}
         )
 )
+@Getter
+@Setter
 public class ExecutionCommandEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Setter(AccessLevel.NONE)
     private Long id;
 
     @Column(name = "master_event_id", nullable = false, length = 128)
@@ -113,13 +119,16 @@ public class ExecutionCommandEntity {
     private String signalTime;
 
     @Column(name = "created_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant updatedAt;
 
     @Version
     @Column(name = "row_version", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Long rowVersion;
 
     @PrePersist
@@ -132,193 +141,5 @@ public class ExecutionCommandEntity {
     @PreUpdate
     void preUpdate() {
         updatedAt = Instant.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public String getMasterEventId() {
-        return masterEventId;
-    }
-
-    public void setMasterEventId(String masterEventId) {
-        this.masterEventId = masterEventId;
-    }
-
-    public Long getMasterAccountId() {
-        return masterAccountId;
-    }
-
-    public void setMasterAccountId(Long masterAccountId) {
-        this.masterAccountId = masterAccountId;
-    }
-
-    public String getMasterAccountKey() {
-        return masterAccountKey;
-    }
-
-    public void setMasterAccountKey(String masterAccountKey) {
-        this.masterAccountKey = masterAccountKey;
-    }
-
-    public Long getFollowerAccountId() {
-        return followerAccountId;
-    }
-
-    public void setFollowerAccountId(Long followerAccountId) {
-        this.followerAccountId = followerAccountId;
-    }
-
-    public String getMasterSymbol() {
-        return masterSymbol;
-    }
-
-    public void setMasterSymbol(String masterSymbol) {
-        this.masterSymbol = masterSymbol;
-    }
-
-    public Mt5SignalType getSignalType() {
-        return signalType;
-    }
-
-    public void setSignalType(Mt5SignalType signalType) {
-        this.signalType = signalType;
-    }
-
-    public ExecutionCommandType getCommandType() {
-        return commandType;
-    }
-
-    public void setCommandType(ExecutionCommandType commandType) {
-        this.commandType = commandType;
-    }
-
-    public String getSymbol() {
-        return symbol;
-    }
-
-    public void setSymbol(String symbol) {
-        this.symbol = symbol;
-    }
-
-    public String getMasterAction() {
-        return masterAction;
-    }
-
-    public void setMasterAction(String masterAction) {
-        this.masterAction = masterAction;
-    }
-
-    public String getFollowerAction() {
-        return followerAction;
-    }
-
-    public void setFollowerAction(String followerAction) {
-        this.followerAction = followerAction;
-    }
-
-    public CopyMode getCopyMode() {
-        return copyMode;
-    }
-
-    public void setCopyMode(CopyMode copyMode) {
-        this.copyMode = copyMode;
-    }
-
-    public BigDecimal getRequestedVolume() {
-        return requestedVolume;
-    }
-
-    public void setRequestedVolume(BigDecimal requestedVolume) {
-        this.requestedVolume = requestedVolume;
-    }
-
-    public BigDecimal getRequestedPrice() {
-        return requestedPrice;
-    }
-
-    public void setRequestedPrice(BigDecimal requestedPrice) {
-        this.requestedPrice = requestedPrice;
-    }
-
-    public BigDecimal getRequestedSl() {
-        return requestedSl;
-    }
-
-    public void setRequestedSl(BigDecimal requestedSl) {
-        this.requestedSl = requestedSl;
-    }
-
-    public BigDecimal getRequestedTp() {
-        return requestedTp;
-    }
-
-    public void setRequestedTp(BigDecimal requestedTp) {
-        this.requestedTp = requestedTp;
-    }
-
-    public Long getMasterDealId() {
-        return masterDealId;
-    }
-
-    public void setMasterDealId(Long masterDealId) {
-        this.masterDealId = masterDealId;
-    }
-
-    public Long getMasterOrderId() {
-        return masterOrderId;
-    }
-
-    public void setMasterOrderId(Long masterOrderId) {
-        this.masterOrderId = masterOrderId;
-    }
-
-    public Long getMasterPositionId() {
-        return masterPositionId;
-    }
-
-    public void setMasterPositionId(Long masterPositionId) {
-        this.masterPositionId = masterPositionId;
-    }
-
-    public ExecutionCommandStatus getStatus() {
-        return status;
-    }
-
-    public void setStatus(ExecutionCommandStatus status) {
-        this.status = status;
-    }
-
-    public ExecutionRejectReason getRejectReason() {
-        return rejectReason;
-    }
-
-    public void setRejectReason(ExecutionRejectReason rejectReason) {
-        this.rejectReason = rejectReason;
-    }
-
-    public String getRejectMessage() {
-        return rejectMessage;
-    }
-
-    public void setRejectMessage(String rejectMessage) {
-        this.rejectMessage = rejectMessage;
-    }
-
-    public String getSignalTime() {
-        return signalTime;
-    }
-
-    public void setSignalTime(String signalTime) {
-        this.signalTime = signalTime;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }

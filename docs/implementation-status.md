@@ -1,185 +1,167 @@
 # Implementation Status
 
-## Scope
+## 判定规则
 
-This file tracks the server-side implementation status for the current phase:
+1. `已完成`：代码、配置、测试已经落地，可以直接联调。
+2. `部分完成`：主链路可用，但仍有边界能力、持久化或多实例能力未补齐。
+3. `未完成`：只有设计，没有当前仓库实现。
 
-1. Receive MT5 websocket signals
-2. Monitor all bound account roles
-3. Convert master trade signals into follower-side dispatch instructions
-4. Delay MQ and real MT5 downlink until later iterations
-
-## Implemented Now
+## 已完成
 
 ### 1. MT5 Signal Ingest
 
-Implemented:
-
 1. WebSocket endpoint: `/ws/trade`
-2. Bearer token handshake validation
+2. Bearer token / query token handshake validation
 3. Session registration and disconnect tracking
 4. Normalization for `HELLO`, `HEARTBEAT`, `DEAL`, and `ORDER`
-5. Short-term dedup for repeated trade events
-
-Key classes:
-
-1. `Mt5TradeWebSocketHandler`
-2. `Mt5SignalIngestService`
-3. `Mt5SignalNormalizer`
-4. `Mt5SessionRegistry`
+5. In-process dedup for repeated trade events
+6. Master EA now reports account balance/equity and instrument metadata
 
 ### 2. Account and Copy Configuration
 
-Implemented:
-
 1. MT5 account binding
-2. Credential encryption at rest
-3. Risk rule persistence
-4. Copy relation management
-5. DAG anti-cycle validation
-6. Route cache refresh abstraction
+2. Optional credential field for websocket-only accounts
+3. Credential encryption at rest when credential is provided
+4. Risk rule persistence
+5. Copy relation management
+6. DAG anti-cycle validation
+7. Symbol mapping persistence
+8. Command-line bootstrap for local initialization
+9. Redis route/follower-risk cache refresh after config writes
 
 ### 3. Copy Engine
 
-Implemented:
-
-1. Consume accepted MT5 `DEAL` events from the in-process event bus
-2. Resolve the platform master account by `server + login`
+1. Consume accepted MT5 `DEAL` and `ORDER` events from the in-process event bus
+2. Resolve master account by `server + login`
 3. Load active follower routes and risk snapshots
 4. Generate `execution_commands`
 5. Generate `follower_dispatch_outbox`
 6. Support `FIXED_LOT`, `BALANCE_RATIO`, `EQUITY_RATIO`, `FOLLOW_MASTER`
-7. Apply symbol allow/block checks and lot-size limits
-8. Apply `reverseFollow` when converting the follower action
-9. Consume `ORDER` signals for follower-side TP/SL sync and pending-order replication
+7. Default relation mode is now `BALANCE_RATIO`
+8. Open sizing supports `risk ratio * account funds scale`
+9. Partial close uses master close ratio; final close can force `closeAll=true`
+10. Apply symbol allow/block checks and lot-size limits
+11. Apply `reverseFollow` when converting follower action
+12. Support TP/SL sync and pending-order replication from `ORDER` events
+13. Dispatch payload includes source instrument metadata
+14. Slippage/spread blocking is disabled by default and only applies to market opens when enabled
 
-Current output model:
+### 4. Redis Route Cache
 
-1. `execution_commands` keeps the decision result per follower
-2. `follower_dispatch_outbox` keeps the follower-side dispatch payload
+1. MariaDB is the source of truth
+2. Redis stores master route snapshots and follower risk snapshots
+3. Copy engine now reads Redis first, falls back to DB on cache miss, then backfills Redis
+4. Route cache keys are prewarmed on startup when Redis backend is enabled
+5. Redis write/read failures degrade gracefully and do not block DB writes
 
-Dispatch lifecycle now supports:
+Current keys:
 
-1. `PENDING`
-2. `ACKED`
-3. `FAILED`
+1. `copy:route:master:{masterAccountId}`
+2. `copy:route:version:{masterAccountId}`
+3. `copy:account:risk:{followerAccountId}`
 
-Current `ORDER` support:
-
-1. Market-order `ORDER_UPDATE` supports position `SL/TP` sync when `followTpSl=true`
-2. Pending-order `ORDER_ADD` generates `CREATE_PENDING_ORDER`
-3. Pending-order `ORDER_UPDATE` generates `UPDATE_PENDING_ORDER`
-4. Pending-order `ORDER_DELETE` generates `CANCEL_PENDING_ORDER`
-5. Dispatch payload includes master order metadata, order type/state, requested volume, price, `SL`, and `TP`
-6. Market-order lifecycle noise from `ORDER_ADD` and `ORDER_DELETE` is recorded but rejected, so it does not trigger duplicate follower dispatches when a `DEAL` already exists
-7. Follower-level manual symbol mapping is applied before risk validation and dispatch generation
-8. Dispatch payload now carries slippage policy metadata and source instrument metadata; slippage check is disabled by default and only applies to market opens when enabled
-
-API added for dispatch lifecycle:
-
-1. `GET /api/execution-commands/dispatches/followers/{followerAccountId}?status=...`
-2. `PATCH /api/execution-commands/dispatches/{dispatchId}`
-3. `GET /api/execution-commands/order-trace?masterAccountId=...&masterOrderId=...`
-4. `GET /api/execution-commands/position-trace?masterAccountId=...&masterPositionId=...`
-
-### 4. Follower Exec Skeleton
-
-Implemented:
+### 5. Follower Exec
 
 1. Dedicated websocket endpoint: `/ws/follower-exec`
 2. Dedicated bearer/query-token handshake validation
 3. Follower session binding by `followerAccountId` or `server + login`
-4. Backlog replay from `follower_dispatch_outbox` when follower `HELLO` succeeds
-5. Live push of newly created `PENDING` dispatches to online follower sessions
+4. Backlog replay from `follower_dispatch_outbox`
+5. Live push of newly created `PENDING` dispatches
 6. Follower-side `ACK` and `FAIL` callbacks with dispatch status write-back
 7. Session list API for current follower-exec connections
-8. MT5 follower EA real-execution path for `OPEN_POSITION`, `CLOSE_POSITION`, `SYNC_TP_SL`, and pending-order create/update/cancel
-9. MT5 follower EA local mapping recovery from MT5 comments on startup
+8. MT5 follower EA execution path for:
+   - `OPEN_POSITION`
+   - `CLOSE_POSITION`
+   - `SYNC_TP_SL`
+   - `CREATE_PENDING_ORDER`
+   - `UPDATE_PENDING_ORDER`
+   - `CANCEL_PENDING_ORDER`
+9. Follower EA local mapping recovery from MT5 comments on startup
+10. Market close does not apply slippage blocking
 
-Follower exec APIs:
-
-1. `GET /api/follower-exec/sessions`
-
-Follower exec websocket messages:
-
-1. Inbound: `HELLO`, `HEARTBEAT`, `ACK`, `FAIL`
-2. Outbound: `HELLO_ACK`, `DISPATCH`, `STATUS_ACK`
-
-Follower MT5 EA modes:
-
-1. `EXECUTION_DRY_RUN`
-2. `EXECUTION_REAL`
-3. Market open can reject locally when slippage check is enabled; market close does not apply slippage blocking
-
-### 5. Monitor
-
-Implemented:
+### 6. Monitor
 
 1. Persist accepted MT5 signals for audit and query
 2. Persist runtime state per `server + login`
-3. Mark runtime sessions disconnected when websocket closes
-4. Expose merged account monitoring overview
+3. Runtime state now includes `balance` and `equity`
+4. Mark runtime sessions disconnected when websocket closes
+5. Expose merged account monitoring overview
 
-Monitor APIs:
+APIs already available:
 
 1. `GET /api/monitor/runtime-states`
 2. `GET /api/monitor/accounts/overview`
 3. `GET /api/monitor/ws-sessions`
 4. `GET /api/monitor/accounts/{accountId}/signals`
 5. `GET /api/monitor/signals?accountKey=...`
+6. `GET /api/follower-exec/sessions`
+7. `GET /api/execution-commands?...`
+8. `GET /api/execution-commands/dispatches?...`
+9. `PATCH /api/execution-commands/dispatches/{dispatchId}`
 
-Account overview includes:
+### 7. Engineering Maintenance
 
-1. Account role and account status
-2. Effective websocket connection status
-3. Last signal metadata
-4. Active master/follower relation counts
-5. Pending and failed follower dispatch counts
+1. JPA entities now carry route/runtime/dispatch related indexes and optimistic-lock `row_version`
+2. Redis configuration has been aligned to Spring Boot 2.7 `spring.redis.*`
+3. DTO/entity/config/cache boilerplate has been reduced with Lombok
+4. Current test suite passes: `28/28`
 
-WS session view includes:
+## 部分完成
 
-1. Current in-memory active websocket sessions
-2. Session trace ID and connected time
-3. Bound MT5 `server + login` identity when `HELLO` has completed
-4. Latest hello/heartbeat/signal snapshot merged from runtime state
-5. Optional `userId` and `accountRole` filtering for bound accounts
+### 1. MT5 Bridge / Single-Repo Runtime
 
-Connection status derivation:
+1. Current codebase already contains MT5 signal ingest and follower downlink execution
+2. But the code is still a single Spring Boot app, not the final split multi-service deployment
 
-1. `CONNECTED` when recent activity exists
-2. `STALE` when no activity is seen within `copier.monitor.heartbeat-stale-after`
-3. `DISCONNECTED` when the websocket session has closed
-4. `UNKNOWN` when the account has no runtime signal yet
+### 2. Redis Usage
 
-## Not Implemented Yet
+1. Route cache and follower risk cache are in Redis
+2. Signal dedup is still JVM-local, not Redis-backed
+3. WebSocket session registry is still in-memory, not Redis-backed
+4. There is no standalone cache rebuild endpoint yet; current rebuild path is startup warmup + config rewrite
 
-1. MQ integration
-2. Pending stop-limit order execution on follower MT5 (`BUY_STOP_LIMIT` / `SELL_STOP_LIMIT`)
+### 3. Monitoring Depth
+
+1. Runtime state already tracks connection, signal heartbeat, balance, equity
+2. Full follower-side position inventory and broker reconciliation are not finished
+
+### 4. Follower Pending Orders
+
+1. Standard pending order create/update/delete is supported
+2. `BUY_STOP_LIMIT` / `SELL_STOP_LIMIT` follower execution is not finished
+
+## 未完成
+
+### 1. MQ and Event Backbone
+
+1. No MQ integration yet
+2. No external topic publishing for config changes, execution commands, or audit events
+
+### 2. Independent Platform Services
+
+1. API Gateway
+2. User Auth Service
+3. WebSocket Notification Service
+4. Agent Scheduler Service
+
+### 3. Advanced Trading Controls
+
+1. Advanced margin checks before follower execution
+2. Broker-side post-fill slippage reconciliation
 3. Durable follower local-ticket mapping outside the EA process
-4. Advanced margin checks and broker-side post-fill slippage reconciliation
-5. Equity snapshot ingestion and full position monitoring
+4. Multi-broker execution worker routing
 
-## Local Connection Configuration
+## Local Configuration
 
-If you want to switch from embedded H2 to real MySQL/Redis, create:
+For local MariaDB + Redis:
 
-`src/main/resources/application-local.yml`
+1. Use `src/main/resources/application-local.yml`
+2. Redis settings must use `spring.redis.*`
+3. Route cache backend is controlled by `copier.account-config.route-cache.backend`
+4. Route cache warmup is controlled by `copier.account-config.route-cache.warmup-on-startup`
 
-Use `src/main/resources/application-local.example.yml` as the template.
+Key local toggles:
 
-The keys you need to fill are:
-
-1. `spring.datasource.url`
-2. `spring.datasource.username`
-3. `spring.datasource.password`
-4. `spring.datasource.driver-class-name`
-5. `spring.data.redis.host`
-6. `spring.data.redis.port`
-7. `spring.data.redis.password`
-8. `spring.data.redis.database`
-9. `copier.security.credentials.secret`
-10. `copier.account-config.route-cache.backend`
-11. `copier.mt5.signal-ingest.bearer-token`
-12. `copier.mt5.follower-exec.bearer-token`
-13. `copier.mt5.follower-exec.heartbeat-stale-after`
-14. `copier.monitor.heartbeat-stale-after`
+1. `SPRING_PROFILES_ACTIVE=local`
+2. `ACCOUNT_ROUTE_CACHE_BACKEND=redis`
+3. `COPY_ENGINE_SLIPPAGE_ENABLED=false` by default

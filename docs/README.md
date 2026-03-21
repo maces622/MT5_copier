@@ -1,59 +1,62 @@
-# MT5 跟单平台文档索引
+# 文档索引
 
-## 1. 文档目标
+## 说明
 
-本目录用于沉淀 `copier_v0` 的系统设计，作为后续开发的统一基线。当前仓库仍处于早期阶段，文档先解决三件事：
+这套文档现在按三类状态管理：
 
-1. 明确当前代码已经具备的能力，避免设计脱离实现。
-2. 明确目标微服务架构、模块边界、消息流和安全约束。
-3. 约定后续按“设计 -> 实现 -> 验证 -> 调整设计”的循环推进。
+1. `已完成实现对齐`：文档内容已经和当前代码基本一致，可直接用于联调和排障。
+2. `部分完成，含目标设计`：文档既描述了当前实现，也保留了后续设计目标，阅读时需要结合状态总表。
+3. `仅目标设计 / 未实现`：文档描述的是目标架构或未来模块，当前仓库还没有对应实现。
 
-## 2. 当前仓库现状
+当前代码状态以 [implementation-status.md](./implementation-status.md) 为准。
 
-当前代码状态不是完整微服务平台，而是“已完成第一段接入骨架 + 若干待建设模块”：
+## 已完成实现对齐
 
-1. Java 侧已落地第一版 MT5 WebSocket 信号接入模块，提供 `/ws/trade`、Bearer Token 握手校验、消息标准化、会话跟踪和基础去重。
-2. Java 侧已落地 `Account/Config` 第一版，包含 MT5 账户绑定、凭证加密、风控规则保存、主从关系管理、防环校验和 Redis 路由缓存抽象。
-3. Java 侧已落地 `Copy Engine` 最小闭环，能够消费已接收的 `DEAL` 信号，读取主从关系并生成执行命令或拒绝记录。
-4. Java 侧当前仍未接入 MQ，也尚未落地真实 MT5 下行执行、监控聚合和真实交易回执处理。
-5. `mt5/Websock_Sender_Master_v0.mq5` 已经能够在 MT5 主账号侧捕获成交/订单事件，并通过 WebSocket 向服务端推送 `HELLO`、`HEARTBEAT`、`DEAL`、`ORDER` 四类消息。
-6. MT5 EA 侧已实现重连、心跳、断线缓存、延迟重试历史查询等基础可靠性逻辑。
-7. `wsclient.mqh` 头文件当前未纳入仓库，需要在后续实现阶段补齐依赖来源和版本管理方式。
+1. [实现状态总表](./implementation-status.md)
+2. [账户与配置服务](./modules/account-config-service.md)
+3. [跟单引擎](./modules/copy-engine-service.md)
+4. [Follower Exec 服务](./modules/follower-exec-service.md)
+5. [监控服务](./modules/monitor-service.md)
 
-这意味着：当前最真实的系统边界，已经演进为“MT5 发送端 + 服务端信号接入层 + 账户配置层 + 执行命令生成层已具备，真实下单链路仍待建设”。
-
-## 3. 阅读顺序
+## 部分完成，含目标设计
 
 1. [总体架构](./architecture/overall-architecture.md)
 2. [安全与可靠性](./architecture/security-and-reliability.md)
-3. [MT5 WebSocket 信号协议](./contracts/mt5-websocket-signal.md)
-4. 模块设计
-   - [API Gateway](./modules/api-gateway.md)
-   - [用户与认证服务](./modules/user-auth-service.md)
-   - [账户与配置服务](./modules/account-config-service.md)
-   - [MT5 Bridge 服务](./modules/mt5-bridge-service.md)
-   - [实时跟单引擎](./modules/copy-engine-service.md)
-   - [仓位与资产监控服务](./modules/monitor-service.md)
-   - [实时推送服务](./modules/websocket-notification-service.md)
-   - [Agent 调度服务](./modules/agent-service.md)
+3. [MT5 WebSocket 协议](./contracts/mt5-websocket-signal.md)
+4. [MT5 Bridge 服务](./modules/mt5-bridge-service.md)
 5. [迭代工作流](./process/iteration-cycle.md)
 
-## 4. 推荐的第一阶段实施顺序
+这些文档里包含一部分已经落地的内容，也包含后续迭代目标：
 
-按照当前仓库状态，建议优先级如下：
+1. MT5 上行信号接入、主从配置、复制指令生成、Follower 下行执行、监控聚合已经有代码。
+2. MQ、独立 Agent、网关拆分、完整多服务部署仍然是目标设计，不是当前仓库现状。
 
-1. 先把当前 `/ws/trade` 接入层升级为标准化入 MQ。
-2. 再做账户与配置服务，先把主从关系和风控规则落地。
-3. 随后实现最小可用的跟单引擎，只支持主账号成交事件驱动的基础跟单。
-4. 最后补齐监控、通知、Agent 和更复杂的风险控制。
+## 仅目标设计 / 未实现
 
-## 5. 后续协作方式
+1. [API Gateway](./modules/api-gateway.md)
+2. [用户认证服务](./modules/user-auth-service.md)
+3. [实时通知服务](./modules/websocket-notification-service.md)
+4. [Agent 调度服务](./modules/agent-service.md)
 
-后续每一轮工作都遵循统一循环：
+这些模块当前仓库没有对应运行时代码，保留文档是为了后续拆分服务时复用设计。
 
-1. 先更新设计文档，明确范围、接口、风险和验收标准。
-2. 再落实现，代码只覆盖当前设计范围。
-3. 然后做验证，至少包含联调路径、边界条件和失败场景。
-4. 最后把验证暴露出来的偏差回写到文档，形成下一轮输入。
+## 当前代码重点
 
-详细规则见 [迭代工作流](./process/iteration-cycle.md)。
+当前仓库已经可以完成的主链路：
+
+1. MT5 主端 EA 通过 `/ws/trade` 上报 `HELLO / HEARTBEAT / DEAL / ORDER`
+2. Java 侧完成主从账户绑定、风控、品种映射、关系配置的持久化
+3. Copy Engine 生成 `execution_commands` 和 `follower_dispatch_outbox`
+4. Follower EA 通过 `/ws/follower-exec` 接收下行指令并执行开仓、平仓、TP/SL 同步、挂单操作
+5. 监控接口可查看账户状态、运行态、信号审计、WebSocket 会话
+6. Redis 已用于主从路由和 follower 风控的读缓存、回填、启动预热
+
+## 开发说明
+
+项目已经引入 Lombok 来收缩 DTO、实体、配置属性和缓存快照样板代码。
+
+本地开发建议：
+
+1. 使用 Maven 或 IDEA 导入项目后启用 annotation processing
+2. 以 `local` profile 启动时使用 MariaDB 作为真源、Redis 作为缓存层
+3. 任何功能是否已经落地，先看 [implementation-status.md](./implementation-status.md)

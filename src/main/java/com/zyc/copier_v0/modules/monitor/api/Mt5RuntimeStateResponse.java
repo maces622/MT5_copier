@@ -2,7 +2,9 @@ package com.zyc.copier_v0.modules.monitor.api;
 
 import com.zyc.copier_v0.modules.monitor.domain.Mt5ConnectionStatus;
 import java.time.Instant;
+import lombok.Data;
 
+@Data
 public class Mt5RuntimeStateResponse {
 
     private Long id;
@@ -18,108 +20,4 @@ public class Mt5RuntimeStateResponse {
     private String lastSignalType;
     private String lastEventId;
     private Instant updatedAt;
-
-    public Long getId() {
-        return id;
-    }
-
-    public void setId(Long id) {
-        this.id = id;
-    }
-
-    public Long getAccountId() {
-        return accountId;
-    }
-
-    public void setAccountId(Long accountId) {
-        this.accountId = accountId;
-    }
-
-    public Long getLogin() {
-        return login;
-    }
-
-    public void setLogin(Long login) {
-        this.login = login;
-    }
-
-    public String getServer() {
-        return server;
-    }
-
-    public void setServer(String server) {
-        this.server = server;
-    }
-
-    public String getAccountKey() {
-        return accountKey;
-    }
-
-    public void setAccountKey(String accountKey) {
-        this.accountKey = accountKey;
-    }
-
-    public String getLastSessionId() {
-        return lastSessionId;
-    }
-
-    public void setLastSessionId(String lastSessionId) {
-        this.lastSessionId = lastSessionId;
-    }
-
-    public Mt5ConnectionStatus getConnectionStatus() {
-        return connectionStatus;
-    }
-
-    public void setConnectionStatus(Mt5ConnectionStatus connectionStatus) {
-        this.connectionStatus = connectionStatus;
-    }
-
-    public Instant getLastHelloAt() {
-        return lastHelloAt;
-    }
-
-    public void setLastHelloAt(Instant lastHelloAt) {
-        this.lastHelloAt = lastHelloAt;
-    }
-
-    public Instant getLastHeartbeatAt() {
-        return lastHeartbeatAt;
-    }
-
-    public void setLastHeartbeatAt(Instant lastHeartbeatAt) {
-        this.lastHeartbeatAt = lastHeartbeatAt;
-    }
-
-    public Instant getLastSignalAt() {
-        return lastSignalAt;
-    }
-
-    public void setLastSignalAt(Instant lastSignalAt) {
-        this.lastSignalAt = lastSignalAt;
-    }
-
-    public String getLastSignalType() {
-        return lastSignalType;
-    }
-
-    public void setLastSignalType(String lastSignalType) {
-        this.lastSignalType = lastSignalType;
-    }
-
-    public String getLastEventId() {
-        return lastEventId;
-    }
-
-    public void setLastEventId(String lastEventId) {
-        this.lastEventId = lastEventId;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public void setUpdatedAt(Instant updatedAt) {
-        this.updatedAt = updatedAt;
-    }
 }

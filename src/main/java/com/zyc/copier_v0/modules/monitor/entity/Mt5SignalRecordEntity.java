@@ -10,6 +10,9 @@ import javax.persistence.Index;
 import javax.persistence.Lob;
 import javax.persistence.PrePersist;
 import javax.persistence.Table;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 
 @Entity
 @Table(
@@ -20,10 +23,13 @@ import javax.persistence.Table;
                 @Index(name = "idx_signal_record_received_at", columnList = "received_at")
         }
 )
+@Getter
+@Setter
 public class Mt5SignalRecordEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Setter(AccessLevel.NONE)
     private Long id;
 
     @Column(name = "event_id", nullable = false, length = 128)
@@ -65,97 +71,5 @@ public class Mt5SignalRecordEntity {
         if (receivedAt == null) {
             receivedAt = Instant.now();
         }
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public String getEventId() {
-        return eventId;
-    }
-
-    public void setEventId(String eventId) {
-        this.eventId = eventId;
-    }
-
-    public String getSignalType() {
-        return signalType;
-    }
-
-    public void setSignalType(String signalType) {
-        this.signalType = signalType;
-    }
-
-    public String getSessionId() {
-        return sessionId;
-    }
-
-    public void setSessionId(String sessionId) {
-        this.sessionId = sessionId;
-    }
-
-    public String getTraceId() {
-        return traceId;
-    }
-
-    public void setTraceId(String traceId) {
-        this.traceId = traceId;
-    }
-
-    public Long getAccountId() {
-        return accountId;
-    }
-
-    public void setAccountId(Long accountId) {
-        this.accountId = accountId;
-    }
-
-    public Long getLogin() {
-        return login;
-    }
-
-    public void setLogin(Long login) {
-        this.login = login;
-    }
-
-    public String getServer() {
-        return server;
-    }
-
-    public void setServer(String server) {
-        this.server = server;
-    }
-
-    public String getAccountKey() {
-        return accountKey;
-    }
-
-    public void setAccountKey(String accountKey) {
-        this.accountKey = accountKey;
-    }
-
-    public String getSourceTimestamp() {
-        return sourceTimestamp;
-    }
-
-    public void setSourceTimestamp(String sourceTimestamp) {
-        this.sourceTimestamp = sourceTimestamp;
-    }
-
-    public Instant getReceivedAt() {
-        return receivedAt;
-    }
-
-    public void setReceivedAt(Instant receivedAt) {
-        this.receivedAt = receivedAt;
-    }
-
-    public String getPayloadJson() {
-        return payloadJson;
-    }
-
-    public void setPayloadJson(String payloadJson) {
-        this.payloadJson = payloadJson;
     }
 }

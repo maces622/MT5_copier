@@ -16,6 +16,9 @@ import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
 import javax.persistence.Version;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 
 @Entity
 @Table(
@@ -26,10 +29,13 @@ import javax.persistence.Version;
         },
         uniqueConstraints = @UniqueConstraint(name = "uk_dispatch_command", columnNames = {"execution_command_id"})
 )
+@Getter
+@Setter
 public class FollowerDispatchOutboxEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Setter(AccessLevel.NONE)
     private Long id;
 
     @Column(name = "execution_command_id", nullable = false)
@@ -59,13 +65,16 @@ public class FollowerDispatchOutboxEntity {
     private Instant failedAt;
 
     @Column(name = "created_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Instant updatedAt;
 
     @Version
     @Column(name = "row_version", nullable = false)
+    @Setter(AccessLevel.NONE)
     private Long rowVersion;
 
     @PrePersist
@@ -78,81 +87,5 @@ public class FollowerDispatchOutboxEntity {
     @PreUpdate
     void preUpdate() {
         updatedAt = Instant.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public Long getExecutionCommandId() {
-        return executionCommandId;
-    }
-
-    public void setExecutionCommandId(Long executionCommandId) {
-        this.executionCommandId = executionCommandId;
-    }
-
-    public String getMasterEventId() {
-        return masterEventId;
-    }
-
-    public void setMasterEventId(String masterEventId) {
-        this.masterEventId = masterEventId;
-    }
-
-    public Long getFollowerAccountId() {
-        return followerAccountId;
-    }
-
-    public void setFollowerAccountId(Long followerAccountId) {
-        this.followerAccountId = followerAccountId;
-    }
-
-    public FollowerDispatchStatus getStatus() {
-        return status;
-    }
-
-    public void setStatus(FollowerDispatchStatus status) {
-        this.status = status;
-    }
-
-    public String getStatusMessage() {
-        return statusMessage;
-    }
-
-    public void setStatusMessage(String statusMessage) {
-        this.statusMessage = statusMessage;
-    }
-
-    public String getPayloadJson() {
-        return payloadJson;
-    }
-
-    public void setPayloadJson(String payloadJson) {
-        this.payloadJson = payloadJson;
-    }
-
-    public Instant getAckedAt() {
-        return ackedAt;
-    }
-
-    public void setAckedAt(Instant ackedAt) {
-        this.ackedAt = ackedAt;
-    }
-
-    public Instant getFailedAt() {
-        return failedAt;
-    }
-
-    public void setFailedAt(Instant failedAt) {
-        this.failedAt = failedAt;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }
