@@ -8,7 +8,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zyc.copier_v0.modules.monitor.domain.Mt5ConnectionStatus;
+import com.zyc.copier_v0.modules.monitor.entity.Mt5AccountRuntimeStateEntity;
+import com.zyc.copier_v0.modules.monitor.repository.Mt5AccountRuntimeStateRepository;
 import com.zyc.copier_v0.modules.signal.ingest.service.Mt5SignalIngestService;
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -39,6 +43,9 @@ class CopyEngineIntegrationTest {
 
     @Autowired
     private Mt5SignalIngestService mt5SignalIngestService;
+
+    @Autowired
+    private Mt5AccountRuntimeStateRepository runtimeStateRepository;
 
     @Test
     void shouldGenerateReadyCommandForFixedLotFollower() throws Exception {
@@ -113,6 +120,64 @@ class CopyEngineIntegrationTest {
     }
 
     @Test
+    void shouldScaleOpenVolumeByBalanceAndCloseUsingMasterCloseRatio() throws Exception {
+        long masterLogin = 921001L;
+        long followerLogin = 921002L;
+        String server = "Broker-Live";
+
+        Long masterAccountId = bindAccount(9010L, "MASTER", server, masterLogin);
+        Long followerAccountId = bindAccount(9010L, "FOLLOWER", server, followerLogin);
+
+        saveRiskRule(followerAccountId, null, 5.00, null, null);
+        createRelation(masterAccountId, followerAccountId, "BALANCE_RATIO");
+        saveRuntimeState(followerAccountId, followerLogin, server, "5000", "5000");
+
+        mt5SignalIngestService.registerConnection("copy-test-session-balance", "trace-balance");
+        mt5SignalIngestService.ingest("copy-test-session-balance", "trace-balance",
+                "{\"type\":\"DEAL\",\"event_id\":\"921001-DEAL-21001\",\"login\":921001,\"server\":\"Broker-Live\",\"deal\":21001,\"order\":21002,\"position\":21003,\"symbol\":\"XAUUSD\",\"action\":\"BUY OPEN\",\"volume\":0.05,\"price\":3025.12,\"deal_type\":0,\"entry\":0,\"magic\":0,\"comment\":\"\",\"time\":\"2026.03.21 15:20:01\",\"account_balance\":2000.0,\"account_equity\":2000.0}");
+
+        mockMvc.perform(get("/api/execution-commands").param("masterEventId", "921001-DEAL-21001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].status").value("READY"))
+                .andExpect(jsonPath("$[0].copyMode").value("BALANCE_RATIO"))
+                .andExpect(jsonPath("$[0].requestedVolume").value(0.1250));
+
+        JsonNode openDispatch = readDispatchPayload("921001-DEAL-21001");
+        org.assertj.core.api.Assertions.assertThat(openDispatch.path("volume").decimalValue())
+                .isEqualByComparingTo("0.1250");
+        org.assertj.core.api.Assertions.assertThat(openDispatch.path("configuredRiskRatio").decimalValue())
+                .isEqualByComparingTo("1");
+        org.assertj.core.api.Assertions.assertThat(openDispatch.path("accountScaleRatio").decimalValue())
+                .isEqualByComparingTo("2.5");
+        org.assertj.core.api.Assertions.assertThat(openDispatch.path("masterFunds").decimalValue())
+                .isEqualByComparingTo("2000");
+        org.assertj.core.api.Assertions.assertThat(openDispatch.path("followerFunds").decimalValue())
+                .isEqualByComparingTo("5000");
+
+        mt5SignalIngestService.ingest("copy-test-session-balance", "trace-balance",
+                "{\"type\":\"DEAL\",\"event_id\":\"921001-DEAL-21002\",\"login\":921001,\"server\":\"Broker-Live\",\"deal\":21002,\"order\":21002,\"position\":21003,\"symbol\":\"XAUUSD\",\"action\":\"BUY CLOSE\",\"volume\":0.03,\"price\":3024.88,\"deal_type\":0,\"entry\":1,\"magic\":0,\"comment\":\"\",\"time\":\"2026.03.21 15:21:01\",\"account_balance\":2000.0,\"account_equity\":2000.0,\"position_volume_before\":0.05,\"position_volume_after\":0.02}");
+
+        JsonNode partialCloseDispatch = readDispatchPayload("921001-DEAL-21002");
+        org.assertj.core.api.Assertions.assertThat(partialCloseDispatch.path("commandType").asText())
+                .isEqualTo("CLOSE_POSITION");
+        org.assertj.core.api.Assertions.assertThat(partialCloseDispatch.path("volume").decimalValue())
+                .isEqualByComparingTo("0.0750");
+        org.assertj.core.api.Assertions.assertThat(partialCloseDispatch.path("closeRatio").decimalValue())
+                .isEqualByComparingTo("0.6");
+        org.assertj.core.api.Assertions.assertThat(partialCloseDispatch.path("closeAll").asBoolean())
+                .isFalse();
+
+        mt5SignalIngestService.ingest("copy-test-session-balance", "trace-balance",
+                "{\"type\":\"DEAL\",\"event_id\":\"921001-DEAL-21003\",\"login\":921001,\"server\":\"Broker-Live\",\"deal\":21003,\"order\":21002,\"position\":21003,\"symbol\":\"XAUUSD\",\"action\":\"BUY CLOSE\",\"volume\":0.02,\"price\":3024.66,\"deal_type\":0,\"entry\":1,\"magic\":0,\"comment\":\"\",\"time\":\"2026.03.21 15:22:01\",\"account_balance\":2000.0,\"account_equity\":2000.0,\"position_volume_before\":0.02,\"position_volume_after\":0.0}");
+
+        JsonNode finalCloseDispatch = readDispatchPayload("921001-DEAL-21003");
+        org.assertj.core.api.Assertions.assertThat(finalCloseDispatch.path("closeRatio").decimalValue())
+                .isEqualByComparingTo("1");
+        org.assertj.core.api.Assertions.assertThat(finalCloseDispatch.path("closeAll").asBoolean())
+                .isTrue();
+    }
+
+    @Test
     void shouldMapMasterSymbolToFollowerSymbolBeforeDispatch() throws Exception {
         long masterLogin = 925001L;
         long followerLogin = 925002L;
@@ -127,7 +192,7 @@ class CopyEngineIntegrationTest {
 
         mt5SignalIngestService.registerConnection("copy-test-session-map", "trace-map");
         mt5SignalIngestService.ingest("copy-test-session-map", "trace-map",
-                "{\"type\":\"DEAL\",\"event_id\":\"925001-DEAL-25001\",\"login\":925001,\"server\":\"Broker-Live\",\"deal\":25001,\"order\":25002,\"position\":25003,\"symbol\":\"XAUUSD\",\"action\":\"BUY OPEN\",\"volume\":1.0,\"price\":3025.12,\"deal_type\":0,\"entry\":0,\"magic\":0,\"comment\":\"mapped\",\"time\":\"2026.03.20 15:21:01\"}");
+                "{\"type\":\"DEAL\",\"event_id\":\"925001-DEAL-25001\",\"login\":925001,\"server\":\"Broker-Live\",\"deal\":25001,\"order\":25002,\"position\":25003,\"symbol\":\"XAUUSD\",\"action\":\"BUY OPEN\",\"volume\":1.0,\"price\":3025.12,\"deal_type\":0,\"entry\":0,\"magic\":0,\"comment\":\"mapped\",\"time\":\"2026.03.20 15:21:01\",\"symbol_digits\":2,\"symbol_point\":0.01,\"symbol_tick_size\":0.01,\"symbol_tick_value\":1.0,\"symbol_contract_size\":100.0,\"symbol_volume_step\":0.01,\"symbol_volume_min\":0.01,\"symbol_volume_max\":100.0,\"symbol_currency_base\":\"XAU\",\"symbol_currency_profit\":\"USD\",\"symbol_currency_margin\":\"USD\"}");
 
         mockMvc.perform(get("/api/execution-commands").param("masterEventId", "925001-DEAL-25001"))
                 .andExpect(status().isOk())
@@ -135,12 +200,34 @@ class CopyEngineIntegrationTest {
                 .andExpect(jsonPath("$[0].masterSymbol").value("XAUUSD"))
                 .andExpect(jsonPath("$[0].symbol").value("XAUUSDm"));
 
-        mockMvc.perform(get("/api/execution-commands/dispatches").param("masterEventId", "925001-DEAL-25001"))
+        MvcResult dispatchResult = mockMvc.perform(get("/api/execution-commands/dispatches")
+                        .param("masterEventId", "925001-DEAL-25001"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].payloadJson").value(org.hamcrest.Matchers.containsString("\"symbol\":\"XAUUSDm\"")))
-                .andExpect(jsonPath("$[0].payloadJson").value(org.hamcrest.Matchers.containsString("\"masterSymbol\":\"XAUUSD\"")))
-                .andExpect(jsonPath("$[0].payloadJson").value(org.hamcrest.Matchers.containsString("\"masterSignal\":{\"login\":925001")))
-                .andExpect(jsonPath("$[0].payloadJson").value(org.hamcrest.Matchers.containsString("\"server\":\"Broker-Live\",\"symbol\":\"XAUUSD\"")));
+                .andReturn();
+
+        JsonNode dispatchPayload = objectMapper.readTree(dispatchResult.getResponse().getContentAsString())
+                .path(0)
+                .path("payloadJson");
+        JsonNode payload = objectMapper.readTree(dispatchPayload.asText());
+
+        org.assertj.core.api.Assertions.assertThat(payload.path("symbol").asText()).isEqualTo("XAUUSDm");
+        org.assertj.core.api.Assertions.assertThat(payload.path("masterSymbol").asText()).isEqualTo("XAUUSD");
+        org.assertj.core.api.Assertions.assertThat(payload.path("slippagePolicy").path("instrumentCategory").asText())
+                .isEqualTo("GOLD");
+        org.assertj.core.api.Assertions.assertThat(payload.path("slippagePolicy").path("mode").asText())
+                .isEqualTo("PIPS");
+        org.assertj.core.api.Assertions.assertThat(payload.path("slippagePolicy").path("maxPips").decimalValue())
+                .isEqualByComparingTo("10");
+        org.assertj.core.api.Assertions.assertThat(payload.path("instrumentMeta").path("sourceSymbol").asText())
+                .isEqualTo("XAUUSD");
+        org.assertj.core.api.Assertions.assertThat(payload.path("instrumentMeta").path("contractSize").decimalValue())
+                .isEqualByComparingTo("100");
+        org.assertj.core.api.Assertions.assertThat(payload.path("masterSignal").path("login").asLong())
+                .isEqualTo(925001L);
+        org.assertj.core.api.Assertions.assertThat(payload.path("masterSignal").path("server").asText())
+                .isEqualTo("Broker-Live");
+        org.assertj.core.api.Assertions.assertThat(payload.path("masterSignal").path("symbol").asText())
+                .isEqualTo("XAUUSD");
     }
 
     @Test
@@ -414,6 +501,37 @@ class CopyEngineIntegrationTest {
                 .andReturn();
 
         return objectMapper.readTree(result.getResponse().getContentAsString()).path("id").asLong();
+    }
+
+    private JsonNode readDispatchPayload(String masterEventId) throws Exception {
+        MvcResult dispatchResult = mockMvc.perform(get("/api/execution-commands/dispatches")
+                        .param("masterEventId", masterEventId))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode dispatchPayload = objectMapper.readTree(dispatchResult.getResponse().getContentAsString())
+                .path(0)
+                .path("payloadJson");
+        return objectMapper.readTree(dispatchPayload.asText());
+    }
+
+    private void saveRuntimeState(
+            Long accountId,
+            long login,
+            String server,
+            String balance,
+            String equity
+    ) {
+        Mt5AccountRuntimeStateEntity state = runtimeStateRepository.findByAccountId(accountId)
+                .orElseGet(Mt5AccountRuntimeStateEntity::new);
+        state.setAccountId(accountId);
+        state.setLogin(login);
+        state.setServer(server);
+        state.setAccountKey(server + ":" + login);
+        state.setConnectionStatus(Mt5ConnectionStatus.CONNECTED);
+        state.setBalance(new BigDecimal(balance));
+        state.setEquity(new BigDecimal(equity));
+        runtimeStateRepository.save(state);
     }
 
     private void saveRiskRule(Long accountId, Double fixedLot, Double maxLot, Double balanceRatio, String blockedSymbols) throws Exception {

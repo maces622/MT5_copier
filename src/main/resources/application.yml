@@ -15,14 +15,15 @@ spring:
     properties:
       hibernate:
         format_sql: false
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    database: ${REDIS_DATABASE:0}
   data:
     redis:
       repositories:
         enabled: false
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
-      database: ${REDIS_DATABASE:0}
 
 server:
   shutdown: graceful
@@ -54,6 +55,11 @@ copier:
       heartbeat-stale-after: PT15S
   monitor:
     heartbeat-stale-after: ${MONITOR_HEARTBEAT_STALE_AFTER:PT10S}
+  copy-engine:
+    slippage:
+      enabled: ${COPY_ENGINE_SLIPPAGE_ENABLED:false}
+      fx-and-gold-max-pips: ${COPY_ENGINE_SLIPPAGE_FX_AND_GOLD_MAX_PIPS:10}
+      other-symbol-max-price: ${COPY_ENGINE_SLIPPAGE_OTHER_SYMBOL_MAX_PRICE:20.0}
 
 logging:
   level:

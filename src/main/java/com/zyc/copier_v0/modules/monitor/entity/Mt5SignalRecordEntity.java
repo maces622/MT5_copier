@@ -6,12 +6,20 @@ import javax.persistence.Entity;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
+import javax.persistence.Index;
 import javax.persistence.Lob;
 import javax.persistence.PrePersist;
 import javax.persistence.Table;
 
 @Entity
-@Table(name = "mt5_signal_records")
+@Table(
+        name = "mt5_signal_records",
+        indexes = {
+                @Index(name = "idx_signal_record_account_key", columnList = "account_key"),
+                @Index(name = "idx_signal_record_event_id", columnList = "event_id"),
+                @Index(name = "idx_signal_record_received_at", columnList = "received_at")
+        }
+)
 public class Mt5SignalRecordEntity {
 
     @Id

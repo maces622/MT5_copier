@@ -69,14 +69,33 @@ struct DispatchCommandData
    int master_order_type;
    int master_order_state;
    int max_slippage_points;
+   bool slippage_enabled;
    string master_event_id;
    string command_type;
    string symbol;
+   string slippage_mode;
+   string instrument_category;
    string follower_action;
+   string source_symbol;
+   string symbol_currency_base;
+   string symbol_currency_profit;
+   string symbol_currency_margin;
+   int symbol_digits;
+   double max_slippage_pips;
+   double max_slippage_price;
+   double symbol_point;
+   double symbol_tick_size;
+   double symbol_tick_value;
+   double symbol_contract_size;
+   double symbol_volume_step;
+   double symbol_volume_min;
+   double symbol_volume_max;
    double volume;
+   double close_ratio;
    double requested_price;
    double requested_sl;
    double requested_tp;
+   bool close_all;
 };
 
 PositionMapping g_position_mappings[];
@@ -235,6 +254,29 @@ bool JsonTryGetInt(const string json, const string key, int &value)
    return true;
 }
 
+bool JsonTryGetBool(const string json, const string key, bool &value)
+{
+   string raw;
+   if(!JsonTryGetRawValue(json, key, raw))
+      return false;
+
+   StringTrimLeft(raw);
+   StringTrimRight(raw);
+   string normalized = raw;
+   StringToUpper(normalized);
+   if(normalized == "TRUE" || normalized == "1")
+   {
+      value = true;
+      return true;
+   }
+   if(normalized == "FALSE" || normalized == "0")
+   {
+      value = false;
+      return true;
+   }
+   return false;
+}
+
 bool JsonTryGetObject(const string json, const string key, string &value)
 {
    string pattern = "\"" + key + "\"";
@@ -389,6 +431,41 @@ double NormalizeVolumeForSymbol(const string symbol, const double raw_volume)
    double steps = bounded / step;
    double normalized = MathRound(steps) * step;
    return NormalizeDouble(normalized, VolumeDigitsFromStep(step));
+}
+
+double NormalizeCloseVolumeForSymbol(
+   const string symbol,
+   const double current_volume,
+   const double requested_volume,
+   const bool close_all
+)
+{
+   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   double min_volume = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   if(step <= 0.0)
+      step = 0.01;
+   if(min_volume <= 0.0)
+      min_volume = step;
+
+   if(close_all || requested_volume >= current_volume - (step / 2.0))
+      return NormalizeDouble(current_volume, VolumeDigitsFromStep(step));
+
+   if(requested_volume < min_volume)
+      return 0.0;
+
+   double normalized = MathFloor((requested_volume + 1e-10) / step) * step;
+   normalized = NormalizeDouble(normalized, VolumeDigitsFromStep(step));
+   if(normalized < min_volume)
+      return 0.0;
+   if(normalized >= current_volume)
+   {
+      double previous_step = MathFloor(((current_volume - step) + 1e-10) / step) * step;
+      previous_step = NormalizeDouble(previous_step, VolumeDigitsFromStep(step));
+      if(previous_step < min_volume)
+         return 0.0;
+      return previous_step;
+   }
+   return normalized;
 }
 
 double NormalizePriceForSymbol(const string symbol, const double raw_price)
@@ -726,6 +803,78 @@ int ResolveDeviationPoints(const DispatchCommandData &command)
    return DefaultDeviationPoints;
 }
 
+double ResolvePipSize(const DispatchCommandData &command)
+{
+   double point = SymbolInfoDouble(command.symbol, SYMBOL_POINT);
+   int digits = (int)SymbolInfoInteger(command.symbol, SYMBOL_DIGITS);
+   if(point <= 0.0 && command.symbol_point > 0.0)
+      point = command.symbol_point;
+   if(digits <= 0 && command.symbol_digits > 0)
+      digits = command.symbol_digits;
+   if(point <= 0.0)
+      return 0.0;
+   if(digits == 3 || digits == 5)
+      return point * 10.0;
+   return point;
+}
+
+bool ValidateMarketSlippage(const DispatchCommandData &command, const double local_price, string &reason)
+{
+   if(!command.slippage_enabled)
+      return true;
+   if(command.requested_price <= 0.0 || command.slippage_mode == "")
+      return true;
+
+   double diff = MathAbs(local_price - command.requested_price);
+   if(command.slippage_mode == "PIPS")
+   {
+      double pip_size = ResolvePipSize(command);
+      if(pip_size <= 0.0 || command.max_slippage_pips <= 0.0)
+      {
+         reason = "Invalid pip slippage configuration";
+         return false;
+      }
+
+      double diff_pips = diff / pip_size;
+      if(diff_pips - command.max_slippage_pips > 1e-8)
+      {
+         reason = StringFormat(
+            "Slippage %.2f pips exceeds limit %.2f pips, masterPrice=%.10f localPrice=%.10f",
+            diff_pips,
+            command.max_slippage_pips,
+            command.requested_price,
+            local_price
+         );
+         return false;
+      }
+      return true;
+   }
+
+   if(command.slippage_mode == "PRICE")
+   {
+      if(command.max_slippage_price <= 0.0)
+      {
+         reason = "Invalid price slippage configuration";
+         return false;
+      }
+
+      if(diff - command.max_slippage_price > 1e-8)
+      {
+         reason = StringFormat(
+            "Price slippage %.10f exceeds limit %.10f, masterPrice=%.10f localPrice=%.10f",
+            diff,
+            command.max_slippage_price,
+            command.requested_price,
+            local_price
+         );
+         return false;
+      }
+      return true;
+   }
+
+   return true;
+}
+
 bool IsBuyAction(const string follower_action)
 {
    return StringFind(follower_action, "BUY") == 0;
@@ -741,14 +890,33 @@ bool ParseDispatchCommand(const string json, DispatchCommandData &command, strin
    command.master_order_type = -1;
    command.master_order_state = -1;
    command.max_slippage_points = 0;
+   command.slippage_enabled = false;
    command.master_event_id = "";
    command.command_type = "";
    command.symbol = "";
+   command.slippage_mode = "";
+   command.instrument_category = "";
    command.follower_action = "";
+   command.source_symbol = "";
+   command.symbol_currency_base = "";
+   command.symbol_currency_profit = "";
+   command.symbol_currency_margin = "";
+   command.symbol_digits = 0;
+   command.max_slippage_pips = 0.0;
+   command.max_slippage_price = 0.0;
+   command.symbol_point = 0.0;
+   command.symbol_tick_size = 0.0;
+   command.symbol_tick_value = 0.0;
+   command.symbol_contract_size = 0.0;
+   command.symbol_volume_step = 0.0;
+   command.symbol_volume_min = 0.0;
+   command.symbol_volume_max = 0.0;
    command.volume = 0.0;
+   command.close_ratio = 0.0;
    command.requested_price = 0.0;
    command.requested_sl = 0.0;
    command.requested_tp = 0.0;
+   command.close_all = false;
 
    if(!JsonTryGetLong(json, "dispatchId", command.dispatch_id))
    {
@@ -776,9 +944,38 @@ bool ParseDispatchCommand(const string json, DispatchCommandData &command, strin
    JsonTryGetInt(payload_json, "masterOrderState", command.master_order_state);
    JsonTryGetInt(payload_json, "maxSlippagePoints", command.max_slippage_points);
    JsonTryGetDouble(payload_json, "volume", command.volume);
+    JsonTryGetDouble(payload_json, "closeRatio", command.close_ratio);
+    JsonTryGetBool(payload_json, "closeAll", command.close_all);
    JsonTryGetDouble(payload_json, "requestedPrice", command.requested_price);
    JsonTryGetDouble(payload_json, "requestedSl", command.requested_sl);
    JsonTryGetDouble(payload_json, "requestedTp", command.requested_tp);
+
+   string slippage_policy_json = "";
+   if(JsonTryGetObject(payload_json, "slippagePolicy", slippage_policy_json))
+   {
+      JsonTryGetBool(slippage_policy_json, "enabled", command.slippage_enabled);
+      JsonTryGetString(slippage_policy_json, "mode", command.slippage_mode);
+      JsonTryGetString(slippage_policy_json, "instrumentCategory", command.instrument_category);
+      JsonTryGetDouble(slippage_policy_json, "maxPips", command.max_slippage_pips);
+      JsonTryGetDouble(slippage_policy_json, "maxPrice", command.max_slippage_price);
+   }
+
+   string instrument_meta_json = "";
+   if(JsonTryGetObject(payload_json, "instrumentMeta", instrument_meta_json))
+   {
+      JsonTryGetString(instrument_meta_json, "sourceSymbol", command.source_symbol);
+      JsonTryGetInt(instrument_meta_json, "digits", command.symbol_digits);
+      JsonTryGetDouble(instrument_meta_json, "point", command.symbol_point);
+      JsonTryGetDouble(instrument_meta_json, "tickSize", command.symbol_tick_size);
+      JsonTryGetDouble(instrument_meta_json, "tickValue", command.symbol_tick_value);
+      JsonTryGetDouble(instrument_meta_json, "contractSize", command.symbol_contract_size);
+      JsonTryGetDouble(instrument_meta_json, "volumeStep", command.symbol_volume_step);
+      JsonTryGetDouble(instrument_meta_json, "volumeMin", command.symbol_volume_min);
+      JsonTryGetDouble(instrument_meta_json, "volumeMax", command.symbol_volume_max);
+      JsonTryGetString(instrument_meta_json, "currencyBase", command.symbol_currency_base);
+      JsonTryGetString(instrument_meta_json, "currencyProfit", command.symbol_currency_profit);
+      JsonTryGetString(instrument_meta_json, "currencyMargin", command.symbol_currency_margin);
+   }
 
    if(command.master_order_type < 0)
    {
@@ -848,6 +1045,8 @@ bool ExecuteOpenPosition(const DispatchCommandData &command, string &status_mess
    request.volume = volume;
    request.type = IsBuyAction(command.follower_action) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    request.price = request.type == ORDER_TYPE_BUY ? tick.ask : tick.bid;
+   if(!ValidateMarketSlippage(command, request.price, status_message))
+      return false;
    request.sl = command.requested_sl > 0.0 ? NormalizePriceForSymbol(command.symbol, command.requested_sl) : 0.0;
    request.tp = command.requested_tp > 0.0 ? NormalizePriceForSymbol(command.symbol, command.requested_tp) : 0.0;
    request.deviation = (ulong)MathMax(0, ResolveDeviationPoints(command));
@@ -894,11 +1093,20 @@ bool ExecuteClosePosition(const DispatchCommandData &command, string &status_mes
       return false;
 
    double current_volume = PositionGetDouble(POSITION_VOLUME);
-   double target_volume = command.volume > 0.0 ? MathMin(current_volume, command.volume) : current_volume;
-   double close_volume = NormalizeVolumeForSymbol(command.symbol, target_volume);
+   bool close_all = command.close_all;
+   double target_volume = current_volume;
+   if(!close_all)
+   {
+      if(command.close_ratio > 0.0)
+         target_volume = current_volume * MathMin(1.0, command.close_ratio);
+      else if(command.volume > 0.0)
+         target_volume = MathMin(current_volume, command.volume);
+   }
+
+   double close_volume = NormalizeCloseVolumeForSymbol(command.symbol, current_volume, target_volume, close_all);
    if(close_volume <= 0.0)
    {
-      status_message = "Close volume is invalid";
+      status_message = "Close volume is below symbol min/step";
       return false;
    }
 
@@ -1306,11 +1514,15 @@ string BuildCustomHeaders()
 
 string BuildHelloJson()
 {
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(FollowerAccountId > 0)
    {
       return StringFormat(
-         "{\"type\":\"HELLO\",\"followerAccountId\":%I64d,\"ts\":\"%s\"}",
+         "{\"type\":\"HELLO\",\"followerAccountId\":%I64d,\"balance\":%.8f,\"equity\":%.8f,\"ts\":\"%s\"}",
          FollowerAccountId,
+         balance,
+         equity,
          TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
       );
    }
@@ -1318,17 +1530,23 @@ string BuildHelloJson()
    long login = (long)AccountInfoInteger(ACCOUNT_LOGIN);
    string server = AccountInfoString(ACCOUNT_SERVER);
    return StringFormat(
-      "{\"type\":\"HELLO\",\"login\":%I64d,\"server\":\"%s\",\"ts\":\"%s\"}",
+      "{\"type\":\"HELLO\",\"login\":%I64d,\"server\":\"%s\",\"balance\":%.8f,\"equity\":%.8f,\"ts\":\"%s\"}",
       login,
       JsonEscape(server),
+      balance,
+      equity,
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
    );
 }
 
 string BuildHeartbeatJson()
 {
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    return StringFormat(
-      "{\"type\":\"HEARTBEAT\",\"ts\":\"%s\"}",
+      "{\"type\":\"HEARTBEAT\",\"balance\":%.8f,\"equity\":%.8f,\"ts\":\"%s\"}",
+      balance,
+      equity,
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
    );
 }

@@ -15,6 +15,7 @@ import com.zyc.copier_v0.modules.copy.engine.domain.FollowerDispatchStatus;
 import com.zyc.copier_v0.modules.copy.engine.entity.FollowerDispatchOutboxEntity;
 import com.zyc.copier_v0.modules.copy.engine.repository.FollowerDispatchOutboxRepository;
 import com.zyc.copier_v0.modules.copy.followerexec.api.FollowerExecSessionResponse;
+import com.zyc.copier_v0.modules.monitor.repository.Mt5AccountRuntimeStateRepository;
 import com.zyc.copier_v0.modules.signal.ingest.service.Mt5SignalIngestService;
 import java.math.BigDecimal;
 import java.net.URI;
@@ -68,6 +69,9 @@ class FollowerExecWebSocketIntegrationTest {
     @Autowired
     private TestRestTemplate testRestTemplate;
 
+    @Autowired
+    private Mt5AccountRuntimeStateRepository runtimeStateRepository;
+
     private final StandardWebSocketClient client = new StandardWebSocketClient();
 
     @Test
@@ -90,7 +94,10 @@ class FollowerExecWebSocketIntegrationTest {
         CapturingTextWebSocketHandler handler = new CapturingTextWebSocketHandler();
         WebSocketSession session = connect(handler);
         try {
-            session.sendMessage(new TextMessage("{\"type\":\"HELLO\",\"followerAccountId\":" + followerAccountId + "}"));
+            session.sendMessage(new TextMessage(
+                    "{\"type\":\"HELLO\",\"followerAccountId\":" + followerAccountId
+                            + ",\"balance\":5000.0,\"equity\":5000.0}"
+            ));
 
             List<JsonNode> initialMessages = awaitMessages(handler, 2, Duration.ofSeconds(5));
             JsonNode helloAck = findByType(initialMessages, "HELLO_ACK");
@@ -104,6 +111,9 @@ class FollowerExecWebSocketIntegrationTest {
             assertThat(dispatch.path("dispatchId").asLong()).isEqualTo(pendingDispatch.getId());
             assertThat(dispatch.path("payload").path("commandType").asText()).isEqualTo("OPEN_POSITION");
             assertThat(dispatch.path("payload").path("symbol").asText()).isEqualTo("XAUUSD");
+            assertThat(dispatch.path("payload").path("slippagePolicy").path("mode").asText()).isEqualTo("PIPS");
+            assertThat(dispatch.path("payload").path("slippagePolicy").path("maxPips").decimalValue()).isEqualByComparingTo("10");
+            assertThat(dispatch.path("payload").path("instrumentMeta").path("contractSize").decimalValue()).isEqualByComparingTo("100");
 
             FollowerExecSessionResponse[] sessions = testRestTemplate.getForObject(
                     "http://localhost:" + port + "/api/follower-exec/sessions",
@@ -113,6 +123,11 @@ class FollowerExecWebSocketIntegrationTest {
             assertThat(sessions).hasSize(1);
             assertThat(sessions[0].getFollowerAccountId()).isEqualTo(followerAccountId);
             assertThat(sessions[0].getLastDispatchId()).isEqualTo(pendingDispatch.getId());
+            assertThat(runtimeStateRepository.findByAccountId(followerAccountId)).isPresent();
+            assertThat(runtimeStateRepository.findByAccountId(followerAccountId).orElseThrow().getBalance())
+                    .isEqualByComparingTo("5000");
+            assertThat(runtimeStateRepository.findByAccountId(followerAccountId).orElseThrow().getEquity())
+                    .isEqualByComparingTo("5000");
 
             session.sendMessage(new TextMessage(
                     "{\"type\":\"ACK\",\"dispatchId\":" + pendingDispatch.getId() + ",\"statusMessage\":\"submitted\"}"
@@ -159,6 +174,8 @@ class FollowerExecWebSocketIntegrationTest {
             assertThat(dispatch.path("type").asText()).isEqualTo("DISPATCH");
             assertThat(dispatch.path("payload").path("commandType").asText()).isEqualTo("OPEN_POSITION");
             assertThat(dispatch.path("payload").path("volume").decimalValue()).isEqualByComparingTo("0.2000");
+            assertThat(dispatch.path("payload").path("slippagePolicy").path("mode").asText()).isEqualTo("PIPS");
+            assertThat(dispatch.path("payload").path("instrumentMeta").path("currencyBase").asText()).isEqualTo("XAU");
 
             long dispatchId = dispatch.path("dispatchId").asLong();
             session.sendMessage(new TextMessage(
@@ -235,7 +252,11 @@ class FollowerExecWebSocketIntegrationTest {
                         + ",\"server\":\"" + server + "\",\"deal\":" + dealId
                         + ",\"order\":20002,\"position\":20003,\"symbol\":\"XAUUSD\",\"action\":\"BUY OPEN\","
                         + "\"volume\":1.0,\"price\":3025.12,\"deal_type\":0,\"entry\":0,\"magic\":0,"
-                        + "\"comment\":\"\",\"time\":\"2026.03.20 18:00:01\"}");
+                        + "\"comment\":\"\",\"time\":\"2026.03.20 18:00:01\","
+                        + "\"symbol_digits\":2,\"symbol_point\":0.01,\"symbol_tick_size\":0.01,"
+                        + "\"symbol_tick_value\":1.0,\"symbol_contract_size\":100.0,"
+                        + "\"symbol_volume_step\":0.01,\"symbol_volume_min\":0.01,\"symbol_volume_max\":100.0,"
+                        + "\"symbol_currency_base\":\"XAU\",\"symbol_currency_profit\":\"USD\",\"symbol_currency_margin\":\"USD\"}");
     }
 
     private List<JsonNode> awaitMessages(

@@ -26,6 +26,7 @@ import java.util.Locale;
 import javax.persistence.EntityNotFoundException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 @Service
 public class AccountConfigService {
@@ -74,8 +75,7 @@ public class AccountConfigService {
         account.setBrokerName(request.getBrokerName());
         account.setServerName(request.getServerName());
         account.setMt5Login(request.getMt5Login());
-        account.setCredentialCiphertext(credentialCipherService.encrypt(request.getCredential()));
-        account.setCredentialVersion(account.getCredentialVersion() == null ? 1 : account.getCredentialVersion() + 1);
+        applyCredential(account, request.getCredential());
         account.setAccountRole(request.getAccountRole());
         account.setStatus(request.getStatus());
 
@@ -241,6 +241,21 @@ public class AccountConfigService {
 
     private int defaultPriority(Integer priority) {
         return priority == null ? 100 : priority;
+    }
+
+    private void applyCredential(Mt5AccountEntity account, String credential) {
+        if (StringUtils.hasText(credential)) {
+            account.setCredentialCiphertext(credentialCipherService.encrypt(credential));
+            account.setCredentialVersion(account.getCredentialVersion() == null ? 1 : account.getCredentialVersion() + 1);
+            return;
+        }
+
+        if (account.getCredentialCiphertext() == null) {
+            account.setCredentialCiphertext("");
+        }
+        if (account.getCredentialVersion() == null) {
+            account.setCredentialVersion(0);
+        }
     }
 
     private String trimToNull(String value) {

@@ -10,14 +10,17 @@ import javax.persistence.Enumerated;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
+import javax.persistence.Index;
 import javax.persistence.PrePersist;
 import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
+import javax.persistence.Version;
 
 @Entity
 @Table(
         name = "mt5_accounts",
+        indexes = @Index(name = "idx_mt5_account_user", columnList = "user_id"),
         uniqueConstraints = @UniqueConstraint(name = "uk_mt5_server_login", columnNames = {"server_name", "mt5_login"})
 )
 public class Mt5AccountEntity {
@@ -57,6 +60,10 @@ public class Mt5AccountEntity {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    @Version
+    @Column(name = "row_version", nullable = false)
+    private Long rowVersion;
 
     @PrePersist
     void prePersist() {

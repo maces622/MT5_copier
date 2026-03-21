@@ -17,7 +17,10 @@ import com.zyc.copier_v0.modules.copy.followerexec.config.FollowerExecWebSocketP
 import com.zyc.copier_v0.modules.copy.followerexec.domain.FollowerExecMessageType;
 import com.zyc.copier_v0.modules.copy.followerexec.domain.FollowerExecSessionContext;
 import com.zyc.copier_v0.modules.monitor.domain.Mt5ConnectionStatus;
+import com.zyc.copier_v0.modules.monitor.entity.Mt5AccountRuntimeStateEntity;
+import com.zyc.copier_v0.modules.monitor.repository.Mt5AccountRuntimeStateRepository;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -45,6 +48,7 @@ public class FollowerExecWebSocketService {
     private final FollowerDispatchOutboxRepository followerDispatchOutboxRepository;
     private final FollowerExecSessionRegistry sessionRegistry;
     private final FollowerExecWebSocketProperties properties;
+    private final Mt5AccountRuntimeStateRepository runtimeStateRepository;
     private final ConcurrentMap<String, WebSocketSession> liveSessions = new ConcurrentHashMap<>();
 
     public FollowerExecWebSocketService(
@@ -52,13 +56,15 @@ public class FollowerExecWebSocketService {
             Mt5AccountRepository mt5AccountRepository,
             FollowerDispatchOutboxRepository followerDispatchOutboxRepository,
             FollowerExecSessionRegistry sessionRegistry,
-            FollowerExecWebSocketProperties properties
+            FollowerExecWebSocketProperties properties,
+            Mt5AccountRuntimeStateRepository runtimeStateRepository
     ) {
         this.objectMapper = objectMapper;
         this.mt5AccountRepository = mt5AccountRepository;
         this.followerDispatchOutboxRepository = followerDispatchOutboxRepository;
         this.sessionRegistry = sessionRegistry;
         this.properties = properties;
+        this.runtimeStateRepository = runtimeStateRepository;
     }
 
     public void registerConnection(String sessionId, String traceId, WebSocketSession session) {
@@ -69,10 +75,11 @@ public class FollowerExecWebSocketService {
 
     public void unregisterConnection(String sessionId) {
         liveSessions.remove(sessionId);
-        sessionRegistry.remove(sessionId).ifPresent(context ->
-                log.info("Follower-exec websocket disconnected, sessionId={}, traceId={}, followerAccountId={}",
-                        context.getSessionId(), context.getTraceId(), context.getFollowerAccountId())
-        );
+        sessionRegistry.remove(sessionId).ifPresent(context -> {
+            markFollowerDisconnected(context);
+            log.info("Follower-exec websocket disconnected, sessionId={}, traceId={}, followerAccountId={}",
+                    context.getSessionId(), context.getTraceId(), context.getFollowerAccountId());
+        });
     }
 
     @Transactional
@@ -84,7 +91,7 @@ public class FollowerExecWebSocketService {
                 handleHello(sessionId, traceId, payload);
                 return;
             case HEARTBEAT:
-                sessionRegistry.touchHeartbeat(sessionId, Instant.now());
+                handleHeartbeat(sessionId, payload);
                 return;
             case ACK:
                 handleDispatchStatusUpdate(sessionId, payload, FollowerDispatchStatus.ACKED);
@@ -121,6 +128,14 @@ public class FollowerExecWebSocketService {
                 followerAccount.getServerName(),
                 helloAt
         );
+        upsertFollowerRuntimeState(
+                followerAccount,
+                sessionId,
+                helloAt,
+                readDecimal(payload, "balance"),
+                readDecimal(payload, "equity"),
+                false
+        );
 
         List<FollowerDispatchOutboxEntity> pendingDispatches = followerDispatchOutboxRepository
                 .findByFollowerAccountIdAndStatusOrderByIdAsc(followerAccount.getId(), FollowerDispatchStatus.PENDING);
@@ -128,6 +143,23 @@ public class FollowerExecWebSocketService {
         for (FollowerDispatchOutboxEntity dispatch : pendingDispatches) {
             pushDispatchIfFollowerOnline(followerAccount.getId(), dispatch.getId());
         }
+    }
+
+    private void handleHeartbeat(String sessionId, JsonNode payload) {
+        Instant heartbeatAt = Instant.now();
+        sessionRegistry.touchHeartbeat(sessionId, heartbeatAt);
+
+        sessionRegistry.get(sessionId)
+                .filter(context -> context.getFollowerAccountId() != null)
+                .flatMap(context -> mt5AccountRepository.findById(context.getFollowerAccountId()))
+                .ifPresent(followerAccount -> upsertFollowerRuntimeState(
+                        followerAccount,
+                        sessionId,
+                        heartbeatAt,
+                        readDecimal(payload, "balance"),
+                        readDecimal(payload, "equity"),
+                        true
+                ));
     }
 
     private void handleDispatchStatusUpdate(
@@ -192,6 +224,48 @@ public class FollowerExecWebSocketService {
 
         return mt5AccountRepository.findByServerNameAndMt5Login(server, login)
                 .orElseThrow(() -> new IllegalArgumentException("Follower account not found for " + server + ":" + login));
+    }
+
+    private void upsertFollowerRuntimeState(
+            Mt5AccountEntity followerAccount,
+            String sessionId,
+            Instant activityAt,
+            BigDecimal balance,
+            BigDecimal equity,
+            boolean heartbeatOnly
+    ) {
+        Mt5AccountRuntimeStateEntity state = runtimeStateRepository.findByAccountId(followerAccount.getId())
+                .orElseGet(Mt5AccountRuntimeStateEntity::new);
+        state.setAccountId(followerAccount.getId());
+        state.setLogin(followerAccount.getMt5Login());
+        state.setServer(followerAccount.getServerName());
+        state.setAccountKey(followerAccount.getServerName() + ":" + followerAccount.getMt5Login());
+        state.setLastSessionId(sessionId);
+        state.setConnectionStatus(Mt5ConnectionStatus.CONNECTED);
+        if (heartbeatOnly) {
+            state.setLastHeartbeatAt(activityAt);
+        } else {
+            state.setLastHelloAt(activityAt);
+        }
+        if (balance != null) {
+            state.setBalance(balance);
+        }
+        if (equity != null) {
+            state.setEquity(equity);
+        }
+        runtimeStateRepository.save(state);
+    }
+
+    private void markFollowerDisconnected(FollowerExecSessionContext context) {
+        if (context.getFollowerAccountId() == null) {
+            return;
+        }
+        runtimeStateRepository.findByAccountId(context.getFollowerAccountId())
+                .ifPresent(state -> {
+                    state.setConnectionStatus(Mt5ConnectionStatus.DISCONNECTED);
+                    state.setLastSessionId(context.getSessionId());
+                    runtimeStateRepository.save(state);
+                });
     }
 
     private void validateFollowerAccount(Mt5AccountEntity followerAccount) {
@@ -350,6 +424,15 @@ public class FollowerExecWebSocketService {
         for (String field : fields) {
             if (payload.hasNonNull(field) && StringUtils.hasText(payload.path(field).asText())) {
                 return payload.path(field).asText();
+            }
+        }
+        return null;
+    }
+
+    private BigDecimal readDecimal(JsonNode payload, String... fields) {
+        for (String field : fields) {
+            if (payload.hasNonNull(field)) {
+                return payload.path(field).decimalValue();
             }
         }
         return null;

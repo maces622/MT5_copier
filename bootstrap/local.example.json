@@ -1,0 +1,49 @@
+{
+  "accounts": [
+    {
+      "alias": "master-ebc-demo",
+      "userId": 10001,
+      "brokerName": "EBC",
+      "serverName": "EBCFinancialGroupKY-Demo",
+      "mt5Login": 51631,
+      "accountRole": "MASTER",
+      "status": "ACTIVE"
+    },
+    {
+      "alias": "follower-ebc-demo",
+      "userId": 10001,
+      "brokerName": "EBC",
+      "serverName": "EBCFinancialGroupKY-Demo",
+      "mt5Login": 51629,
+      "accountRole": "FOLLOWER",
+      "status": "ACTIVE"
+    }
+  ],
+  "riskRules": [
+    {
+      "accountAlias": "follower-ebc-demo",
+      "balanceRatio": 1.0,
+      "maxLot": 1.00,
+      "maxSlippagePoints": 30,
+      "maxSlippagePips": 10,
+      "followTpSl": true,
+      "reverseFollow": false
+    }
+  ],
+  "copyRelations": [
+    {
+      "masterAccountAlias": "master-ebc-demo",
+      "followerAccountAlias": "follower-ebc-demo",
+      "copyMode": "BALANCE_RATIO",
+      "status": "ACTIVE",
+      "priority": 100
+    }
+  ],
+  "symbolMappings": [
+    {
+      "followerAccountAlias": "follower-ebc-demo",
+      "masterSymbol": "XAUUSD",
+      "followerSymbol": "XAUUSDm"
+    }
+  ]
+}

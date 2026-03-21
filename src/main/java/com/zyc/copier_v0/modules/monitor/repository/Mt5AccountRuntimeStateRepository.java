@@ -7,6 +7,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface Mt5AccountRuntimeStateRepository extends JpaRepository<Mt5AccountRuntimeStateEntity, Long> {
 
+    Optional<Mt5AccountRuntimeStateEntity> findByAccountId(Long accountId);
+
     Optional<Mt5AccountRuntimeStateEntity> findByServerAndLogin(String server, Long login);
 
     List<Mt5AccountRuntimeStateEntity> findAllByOrderByUpdatedAtDesc();

@@ -11,16 +11,22 @@ import javax.persistence.FetchType;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
+import javax.persistence.Index;
 import javax.persistence.JoinColumn;
 import javax.persistence.ManyToOne;
 import javax.persistence.PrePersist;
 import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
+import javax.persistence.Version;
 
 @Entity
 @Table(
         name = "copy_relations",
+        indexes = {
+                @Index(name = "idx_copy_relation_master_status_priority", columnList = "master_account_id,status,priority"),
+                @Index(name = "idx_copy_relation_follower_status", columnList = "follower_account_id,status")
+        },
         uniqueConstraints = @UniqueConstraint(
                 name = "uk_copy_relation_master_follower",
                 columnNames = {"master_account_id", "follower_account_id"}
@@ -59,6 +65,10 @@ public class CopyRelationEntity {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    @Version
+    @Column(name = "row_version", nullable = false)
+    private Long rowVersion;
 
     @PrePersist
     void prePersist() {

@@ -31,14 +31,14 @@ public class DefaultDispatchSlippagePolicyResolver implements DispatchSlippagePo
                     riskSnapshot == null ? null : riskSnapshot.getMaxSlippagePips(),
                     properties.getFxAndGoldMaxPips()
             );
-            return new DispatchSlippagePolicy(category, DispatchSlippageMode.PIPS, maxPips, null);
+            return new DispatchSlippagePolicy(properties.isEnabled(), category, DispatchSlippageMode.PIPS, maxPips, null);
         }
 
         BigDecimal maxPrice = positiveOrDefault(
                 riskSnapshot == null ? null : riskSnapshot.getMaxSlippagePrice(),
                 properties.getOtherSymbolMaxPrice()
         );
-        return new DispatchSlippagePolicy(category, DispatchSlippageMode.PRICE, null, maxPrice);
+        return new DispatchSlippagePolicy(properties.isEnabled(), category, DispatchSlippageMode.PRICE, null, maxPrice);
     }
 
     private InstrumentCategory classify(JsonNode signalPayload) {

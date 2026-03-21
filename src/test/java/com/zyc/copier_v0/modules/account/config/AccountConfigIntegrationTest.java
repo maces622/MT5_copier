@@ -74,6 +74,26 @@ class AccountConfigIntegrationTest {
     }
 
     @Test
+    void shouldAllowBindingWebsocketOnlyAccountWithoutCredential() throws Exception {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("userId", 1100L);
+        payload.put("brokerName", "EBC");
+        payload.put("serverName", "EBCFinancialGroupKY-Demo");
+        payload.put("mt5Login", 51629L);
+        payload.put("accountRole", "FOLLOWER");
+        payload.put("status", "ACTIVE");
+
+        mockMvc.perform(post("/api/accounts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.serverName").value("EBCFinancialGroupKY-Demo"))
+                .andExpect(jsonPath("$.mt5Login").value(51629))
+                .andExpect(jsonPath("$.credentialConfigured").value(false))
+                .andExpect(jsonPath("$.credentialVersion").value(0));
+    }
+
+    @Test
     void shouldRejectCycleWhenCreatingReverseRelation() throws Exception {
         Long accountA = bindAccount(2002L, "BOTH");
         Long accountB = bindAccount(2002L, "BOTH");

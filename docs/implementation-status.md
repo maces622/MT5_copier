@@ -73,6 +73,7 @@ Current `ORDER` support:
 5. Dispatch payload includes master order metadata, order type/state, requested volume, price, `SL`, and `TP`
 6. Market-order lifecycle noise from `ORDER_ADD` and `ORDER_DELETE` is recorded but rejected, so it does not trigger duplicate follower dispatches when a `DEAL` already exists
 7. Follower-level manual symbol mapping is applied before risk validation and dispatch generation
+8. Dispatch payload now carries slippage policy metadata and source instrument metadata; slippage check is disabled by default and only applies to market opens when enabled
 
 API added for dispatch lifecycle:
 
@@ -108,6 +109,7 @@ Follower MT5 EA modes:
 
 1. `EXECUTION_DRY_RUN`
 2. `EXECUTION_REAL`
+3. Market open can reject locally when slippage check is enabled; market close does not apply slippage blocking
 
 ### 5. Monitor
 
@@ -154,7 +156,7 @@ Connection status derivation:
 1. MQ integration
 2. Pending stop-limit order execution on follower MT5 (`BUY_STOP_LIMIT` / `SELL_STOP_LIMIT`)
 3. Durable follower local-ticket mapping outside the EA process
-4. Margin checks and slippage control
+4. Advanced margin checks and broker-side post-fill slippage reconciliation
 5. Equity snapshot ingestion and full position monitoring
 
 ## Local Connection Configuration

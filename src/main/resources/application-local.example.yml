@@ -10,12 +10,11 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-  data:
-    redis:
-      host: 127.0.0.1
-      port: 6379
-      password:
-      database: 0
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    password:
+    database: 0
 
 copier:
   security:
@@ -33,3 +32,8 @@ copier:
       heartbeat-stale-after: PT15S
   monitor:
     heartbeat-stale-after: PT10S
+  copy-engine:
+    slippage:
+      enabled: false
+      fx-and-gold-max-pips: 10
+      other-symbol-max-price: 20.0

@@ -19,7 +19,6 @@ public class BindMt5AccountRequest {
     @NotNull
     private Long mt5Login;
 
-    @NotBlank
     private String credential;
 
     @NotNull

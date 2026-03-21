@@ -318,6 +318,84 @@ string ActionFromEntry(const int entry, const int deal_type)
    return "UNKNOWN";
 }
 
+string BuildSymbolMetadataJson(const string symbol)
+{
+   if(symbol == NULL || symbol == "")
+      return "";
+
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   double tick_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tick_value = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+   double contract_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   double volume_step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   double volume_min = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double volume_max = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   string currency_base = SymbolInfoString(symbol, SYMBOL_CURRENCY_BASE);
+   string currency_profit = SymbolInfoString(symbol, SYMBOL_CURRENCY_PROFIT);
+   string currency_margin = SymbolInfoString(symbol, SYMBOL_CURRENCY_MARGIN);
+
+   return StringFormat(
+      ",\"symbol_digits\":%d,\"symbol_point\":%.10f,\"symbol_tick_size\":%.10f,"
+      "\"symbol_tick_value\":%.10f,\"symbol_contract_size\":%.10f,"
+      "\"symbol_volume_step\":%.8f,\"symbol_volume_min\":%.8f,\"symbol_volume_max\":%.8f,"
+      "\"symbol_currency_base\":\"%s\",\"symbol_currency_profit\":\"%s\",\"symbol_currency_margin\":\"%s\"",
+      digits,
+      point,
+      tick_size,
+      tick_value,
+      contract_size,
+      volume_step,
+      volume_min,
+      volume_max,
+      JsonEscape(currency_base),
+      JsonEscape(currency_profit),
+      JsonEscape(currency_margin)
+   );
+}
+
+string BuildAccountFundsJson()
+{
+   return StringFormat(
+      ",\"account_balance\":%.8f,\"account_equity\":%.8f",
+      AccountInfoDouble(ACCOUNT_BALANCE),
+      AccountInfoDouble(ACCOUNT_EQUITY)
+   );
+}
+
+bool TryFindOpenPositionVolumeById(const long position_id, const string symbol, double &volume_after)
+{
+   for(int i=PositionsTotal() - 1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(position_id > 0 && (long)PositionGetInteger(POSITION_IDENTIFIER) != position_id)
+         continue;
+      if(symbol != "" && PositionGetString(POSITION_SYMBOL) != symbol)
+         continue;
+
+      volume_after = PositionGetDouble(POSITION_VOLUME);
+      return true;
+   }
+   return false;
+}
+
+string BuildDealPositionSnapshotJson(const int entry, const long position_id, const string symbol, const double close_volume)
+{
+   if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY)
+      return "";
+
+   double position_volume_after = 0.0;
+   TryFindOpenPositionVolumeById(position_id, symbol, position_volume_after);
+   double position_volume_before = close_volume + position_volume_after;
+   return StringFormat(
+      ",\"position_volume_before\":%.8f,\"position_volume_after\":%.8f",
+      position_volume_before,
+      position_volume_after
+   );
+}
+
 string BuildDealJson(const ulong deal_ticket, const datetime enqueue_time)
 {
    // 限定一个较小窗口，确保该成交被加载进本地历史
@@ -348,13 +426,16 @@ string BuildDealJson(const ulong deal_ticket, const datetime enqueue_time)
 
    string action = ActionFromEntry(entry, dtype);
    string event_id = StringFormat("%I64d-DEAL-%I64u", login, deal_ticket);
+   string account_funds = BuildAccountFundsJson();
+   string symbol_meta = BuildSymbolMetadataJson(symbol);
+   string position_snapshot = BuildDealPositionSnapshotJson(entry, pos_id, symbol, volume);
 
    return StringFormat(
       "{\"type\":\"DEAL\",\"event_id\":\"%s\",\"login\":%I64d,\"server\":\"%s\","
       "\"deal\":%I64u,\"order\":%I64d,\"position\":%I64d,"
       "\"symbol\":\"%s\",\"action\":\"%s\",\"volume\":%.4f,\"price\":%.10f,"
       "\"deal_type\":%d,\"entry\":%d,\"magic\":%I64d,"
-      "\"comment\":\"%s\",\"time\":\"%s\"}",
+      "\"comment\":\"%s\",\"time\":\"%s\"%s%s%s}",
       JsonEscape(event_id),
       login, JsonEscape(srv),
       deal_ticket, ord_id, pos_id,
@@ -362,7 +443,10 @@ string BuildDealJson(const ulong deal_ticket, const datetime enqueue_time)
       volume, price,
       dtype, entry, magic,
       JsonEscape(cmt),
-      TimeToString(t, TIME_DATE|TIME_SECONDS)
+      TimeToString(t, TIME_DATE|TIME_SECONDS),
+      account_funds,
+      position_snapshot,
+      symbol_meta
    );
 }
 
@@ -404,6 +488,8 @@ string BuildPositionUpdateJson(const ulong position_ticket, const datetime enque
    datetime t_setup = (datetime)PositionGetInteger(POSITION_TIME);
    datetime t_done = (datetime)PositionGetInteger(POSITION_TIME_UPDATE);
    int order_type = position_type == POSITION_TYPE_SELL ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   string account_funds = BuildAccountFundsJson();
+   string symbol_meta = BuildSymbolMetadataJson(symbol);
 
    string event_id = StringFormat("%I64d-ORDER_UPDATE-POS-%I64d-%I64d-%I64d-%I64d-%I64d",
                                   login,
@@ -419,13 +505,15 @@ string BuildPositionUpdateJson(const ulong position_ticket, const datetime enque
       "\"order\":0,\"position\":%I64d,\"symbol\":\"%s\",\"order_type\":%d,\"order_state\":1,"
       "\"vol_init\":%.4f,\"vol_cur\":%.4f,\"price_open\":%.10f,\"sl\":%.10f,\"tp\":%.10f,"
       "\"magic\":%I64d,\"comment\":\"%s\","
-      "\"time_setup\":\"%s\",\"time_done\":\"%s\"}",
+      "\"time_setup\":\"%s\",\"time_done\":\"%s\"%s%s}",
       JsonEscape(event_id),
       login, JsonEscape(srv),
       position_id, JsonEscape(symbol), order_type, volume, volume, price_open, sl, tp,
       magic, JsonEscape(comment),
       TimeToString(t_setup, TIME_DATE|TIME_SECONDS),
-      TimeToString(t_done, TIME_DATE|TIME_SECONDS)
+      TimeToString(t_done, TIME_DATE|TIME_SECONDS),
+      account_funds,
+      symbol_meta
    );
 }
 
@@ -500,6 +588,8 @@ string BuildOrderJson(const int trans_type, const ulong order_ticket, const ulon
                      login, ev, order_ticket, (long)enqueue_time,
                      PriceFingerprint(price_open), PriceFingerprint(sl), PriceFingerprint(tp), VolumeFingerprint(vol_cur))
       : StringFormat("%I64d-%s-%I64u", login, ev, order_ticket);
+   string account_funds = BuildAccountFundsJson();
+   string symbol_meta = BuildSymbolMetadataJson(symbol);
 
    return StringFormat(
       "{\"type\":\"ORDER\",\"event\":\"%s\",\"scope\":\"%s\",\"event_id\":\"%s\","
@@ -507,14 +597,16 @@ string BuildOrderJson(const int trans_type, const ulong order_ticket, const ulon
       "\"order\":%I64u,\"position\":%I64d,\"symbol\":\"%s\",\"order_type\":%d,\"order_state\":%d,"
       "\"vol_init\":%.4f,\"vol_cur\":%.4f,\"price_open\":%.10f,\"sl\":%.10f,\"tp\":%.10f,"
       "\"magic\":%I64d,\"comment\":\"%s\","
-      "\"time_setup\":\"%s\",\"time_done\":\"%s\"}",
+      "\"time_setup\":\"%s\",\"time_done\":\"%s\"%s%s}",
       ev, scope, JsonEscape(event_id),
       login, JsonEscape(srv),
       order_ticket, position_id, JsonEscape(symbol), (int)type, (int)state,
       vol_init, vol_cur, price_open, sl, tp,
       magic, JsonEscape(comment),
       TimeToString(t_setup, TIME_DATE|TIME_SECONDS),
-      TimeToString(t_done,  TIME_DATE|TIME_SECONDS)
+      TimeToString(t_done,  TIME_DATE|TIME_SECONDS),
+      account_funds,
+      symbol_meta
    );
 }
 

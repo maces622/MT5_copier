@@ -26,6 +26,7 @@ import com.zyc.copier_v0.modules.signal.ingest.domain.NormalizedMt5Signal;
 import com.zyc.copier_v0.modules.signal.ingest.event.Mt5SessionDisconnectedEvent;
 import com.zyc.copier_v0.modules.signal.ingest.event.Mt5SignalAcceptedEvent;
 import com.zyc.copier_v0.modules.signal.ingest.service.Mt5SessionRegistry;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -106,6 +107,8 @@ public class AccountMonitorService {
         state.setLastSignalAt(signal.getReceivedAt());
         state.setLastSignalType(signal.getType().name());
         state.setLastEventId(signal.getEventId());
+        state.setBalance(readDecimal(signal.getPayload(), "account_balance", "balance"));
+        state.setEquity(readDecimal(signal.getPayload(), "account_equity", "equity"));
         if ("HELLO".equals(signal.getType().name())) {
             state.setLastHelloAt(signal.getReceivedAt());
         }
@@ -254,6 +257,15 @@ public class AccountMonitorService {
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Failed to serialize signal payload", ex);
         }
+    }
+
+    private BigDecimal readDecimal(com.fasterxml.jackson.databind.JsonNode payload, String... fields) {
+        for (String field : fields) {
+            if (payload.hasNonNull(field)) {
+                return payload.path(field).decimalValue();
+            }
+        }
+        return null;
     }
 
     private Mt5RuntimeStateResponse toRuntimeStateResponse(Mt5AccountRuntimeStateEntity entity) {

@@ -14,6 +14,8 @@ public class AccountRouteCacheProperties {
     @NotBlank
     private String keyPrefix = "copy";
 
+    private boolean warmupOnStartup = true;
+
     public String getBackend() {
         return backend;
     }
@@ -28,5 +30,13 @@ public class AccountRouteCacheProperties {
 
     public void setKeyPrefix(String keyPrefix) {
         this.keyPrefix = keyPrefix;
+    }
+
+    public boolean isWarmupOnStartup() {
+        return warmupOnStartup;
+    }
+
+    public void setWarmupOnStartup(boolean warmupOnStartup) {
+        this.warmupOnStartup = warmupOnStartup;
     }
 }

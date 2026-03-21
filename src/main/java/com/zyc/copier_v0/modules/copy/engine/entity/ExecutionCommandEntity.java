@@ -14,14 +14,22 @@ import javax.persistence.Enumerated;
 import javax.persistence.GeneratedValue;
 import javax.persistence.GenerationType;
 import javax.persistence.Id;
+import javax.persistence.Index;
 import javax.persistence.PrePersist;
 import javax.persistence.PreUpdate;
 import javax.persistence.Table;
 import javax.persistence.UniqueConstraint;
+import javax.persistence.Version;
 
 @Entity
 @Table(
         name = "execution_commands",
+        indexes = {
+                @Index(name = "idx_execution_command_follower", columnList = "follower_account_id"),
+                @Index(name = "idx_execution_command_master_order", columnList = "master_account_id,master_order_id"),
+                @Index(name = "idx_execution_command_master_position", columnList = "master_account_id,master_position_id"),
+                @Index(name = "idx_execution_command_status", columnList = "status")
+        },
         uniqueConstraints = @UniqueConstraint(
                 name = "uk_execution_command_master_event_follower",
                 columnNames = {"master_event_id", "follower_account_id"}
@@ -109,6 +117,10 @@ public class ExecutionCommandEntity {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    @Version
+    @Column(name = "row_version", nullable = false)
+    private Long rowVersion;
 
     @PrePersist
     void prePersist() {

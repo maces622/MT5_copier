@@ -7,7 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zyc.copier_v0.modules.account.config.cache.FollowerRiskCacheSnapshot;
 import com.zyc.copier_v0.modules.account.config.cache.FollowerRouteCacheItem;
 import com.zyc.copier_v0.modules.account.config.cache.MasterRouteCacheSnapshot;
-import com.zyc.copier_v0.modules.account.config.cache.CopyRouteSnapshotFactory;
+import com.zyc.copier_v0.modules.account.config.cache.CopyRouteSnapshotReader;
 import com.zyc.copier_v0.modules.account.config.domain.CopyMode;
 import com.zyc.copier_v0.modules.account.config.entity.Mt5AccountEntity;
 import com.zyc.copier_v0.modules.account.config.repository.Mt5AccountRepository;
@@ -25,6 +25,7 @@ import com.zyc.copier_v0.modules.copy.engine.repository.ExecutionCommandReposito
 import com.zyc.copier_v0.modules.copy.engine.repository.FollowerDispatchOutboxRepository;
 import com.zyc.copier_v0.modules.copy.engine.slippage.DispatchSlippagePolicy;
 import com.zyc.copier_v0.modules.copy.engine.slippage.DispatchSlippagePolicyResolver;
+import com.zyc.copier_v0.modules.monitor.repository.Mt5AccountRuntimeStateRepository;
 import com.zyc.copier_v0.modules.signal.ingest.domain.Mt5SignalType;
 import com.zyc.copier_v0.modules.signal.ingest.domain.NormalizedMt5Signal;
 import com.zyc.copier_v0.modules.signal.ingest.event.Mt5SignalAcceptedEvent;
@@ -53,27 +54,30 @@ public class CopyEngineService {
     private static final Logger log = LoggerFactory.getLogger(CopyEngineService.class);
 
     private final Mt5AccountRepository mt5AccountRepository;
-    private final CopyRouteSnapshotFactory copyRouteSnapshotFactory;
+    private final CopyRouteSnapshotReader copyRouteSnapshotReader;
     private final ExecutionCommandRepository executionCommandRepository;
     private final FollowerDispatchOutboxRepository followerDispatchOutboxRepository;
     private final DispatchSlippagePolicyResolver dispatchSlippagePolicyResolver;
+    private final Mt5AccountRuntimeStateRepository runtimeStateRepository;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher applicationEventPublisher;
 
     public CopyEngineService(
             Mt5AccountRepository mt5AccountRepository,
-            CopyRouteSnapshotFactory copyRouteSnapshotFactory,
+            CopyRouteSnapshotReader copyRouteSnapshotReader,
             ExecutionCommandRepository executionCommandRepository,
             FollowerDispatchOutboxRepository followerDispatchOutboxRepository,
             DispatchSlippagePolicyResolver dispatchSlippagePolicyResolver,
+            Mt5AccountRuntimeStateRepository runtimeStateRepository,
             ObjectMapper objectMapper,
             ApplicationEventPublisher applicationEventPublisher
     ) {
         this.mt5AccountRepository = mt5AccountRepository;
-        this.copyRouteSnapshotFactory = copyRouteSnapshotFactory;
+        this.copyRouteSnapshotReader = copyRouteSnapshotReader;
         this.executionCommandRepository = executionCommandRepository;
         this.followerDispatchOutboxRepository = followerDispatchOutboxRepository;
         this.dispatchSlippagePolicyResolver = dispatchSlippagePolicyResolver;
+        this.runtimeStateRepository = runtimeStateRepository;
         this.objectMapper = objectMapper;
         this.applicationEventPublisher = applicationEventPublisher;
     }
@@ -98,7 +102,7 @@ public class CopyEngineService {
         }
 
         Mt5AccountEntity masterAccount = masterAccountOptional.get();
-        MasterRouteCacheSnapshot routeSnapshot = copyRouteSnapshotFactory.buildMasterRoute(masterAccount.getId());
+        MasterRouteCacheSnapshot routeSnapshot = copyRouteSnapshotReader.loadMasterRoute(masterAccount.getId());
         if (routeSnapshot.getFollowers().isEmpty()) {
             log.info("No active followers for master account, masterAccountId={}, eventId={}",
                     masterAccount.getId(), signal.getEventId());
@@ -241,7 +245,9 @@ public class CopyEngineService {
                 follower.getCopyMode(),
                 follower.getRisk(),
                 followerSymbol,
-                masterVolume
+                masterVolume,
+                payload,
+                follower.getFollowerAccountId()
         );
         if (rejection.isRejected()) {
             command.setStatus(ExecutionCommandStatus.REJECTED);
@@ -296,7 +302,9 @@ public class CopyEngineService {
                 scope,
                 pendingOrder,
                 marketOrder,
-                command.getRequestedVolume()
+                command.getRequestedVolume(),
+                payload,
+                follower.getFollowerAccountId()
         );
         if (rejection.isRejected()) {
             command.setStatus(ExecutionCommandStatus.REJECTED);
@@ -383,7 +391,9 @@ public class CopyEngineService {
             CopyMode copyMode,
             FollowerRiskCacheSnapshot risk,
             String symbol,
-            BigDecimal masterVolume
+            BigDecimal masterVolume,
+            JsonNode signalPayload,
+            Long followerAccountId
     ) {
         Rejection symbolValidation = validateSymbolAccess(risk, symbol);
         if (symbolValidation.isRejected()) {
@@ -403,10 +413,13 @@ public class CopyEngineService {
                 break;
             case BALANCE_RATIO:
             case EQUITY_RATIO:
-                if (risk.getBalanceRatio() == null || risk.getBalanceRatio().compareTo(BigDecimal.ZERO) <= 0) {
-                    return Rejection.rejected(ExecutionRejectReason.RATIO_MISSING, "Ratio is not configured", null);
+                BigDecimal configuredRiskRatio = resolveConfiguredRiskRatio(risk);
+                if (configuredRiskRatio == null) {
+                    return Rejection.rejected(ExecutionRejectReason.RATIO_MISSING, "Configured ratio must be positive", null);
                 }
-                requestedVolume = masterVolume.multiply(risk.getBalanceRatio());
+                requestedVolume = masterVolume
+                        .multiply(configuredRiskRatio)
+                        .multiply(resolveAccountScaleRatio(copyMode, signalPayload, followerAccountId));
                 break;
             case FOLLOW_MASTER:
                 requestedVolume = masterVolume;
@@ -434,7 +447,9 @@ public class CopyEngineService {
             String scope,
             boolean pendingOrder,
             boolean marketOrder,
-            BigDecimal masterVolume
+            BigDecimal masterVolume,
+            JsonNode signalPayload,
+            Long followerAccountId
     ) {
         Rejection symbolValidation = validateSymbolAccess(risk, symbol);
         if (symbolValidation.isRejected()) {
@@ -472,7 +487,14 @@ public class CopyEngineService {
             return Rejection.ready(null);
         }
 
-        Rejection volumeValidation = validateAndComputeDealVolume(copyMode, risk, symbol, masterVolume);
+        Rejection volumeValidation = validateAndComputeDealVolume(
+                copyMode,
+                risk,
+                symbol,
+                masterVolume,
+                signalPayload,
+                followerAccountId
+        );
         if (volumeValidation.isRejected()) {
             return volumeValidation;
         }
@@ -608,6 +630,9 @@ public class CopyEngineService {
             NormalizedMt5Signal signal,
             FollowerRouteCacheItem follower
     ) {
+        DispatchSlippagePolicy slippagePolicy = dispatchSlippagePolicyResolver.resolve(signal.getPayload(), follower.getRisk());
+        boolean slippageEnabled = slippagePolicy.isEnabled()
+                && command.getCommandType() == ExecutionCommandType.OPEN_POSITION;
         ObjectNode payload = objectMapper.createObjectNode();
         payload.put("commandId", command.getId());
         payload.put("masterEventId", command.getMasterEventId());
@@ -634,6 +659,33 @@ public class CopyEngineService {
         putNullableInteger(payload, "maxSlippagePoints", follower.getRisk().getMaxSlippagePoints());
         putNullableInteger(payload, "masterOrderType", readInteger(signal.getPayload(), "order_type"));
         putNullableInteger(payload, "masterOrderState", readInteger(signal.getPayload(), "order_state"));
+        putNullableBigDecimal(payload, "configuredRiskRatio", resolveConfiguredRiskRatioOrDefault(command.getCopyMode(), follower.getRisk()));
+        putNullableBigDecimal(payload, "accountScaleRatio", resolveAccountScaleRatio(command.getCopyMode(), signal.getPayload(), command.getFollowerAccountId()));
+        putNullableBigDecimal(payload, "masterFunds", resolveMasterFunds(command.getCopyMode(), signal.getPayload()));
+        putNullableBigDecimal(payload, "followerFunds", resolveFollowerFunds(command.getCopyMode(), command.getFollowerAccountId()));
+
+        ObjectNode slippageNode = payload.putObject("slippagePolicy");
+        slippageNode.put("enabled", slippageEnabled);
+        slippageNode.put("instrumentCategory", slippagePolicy.getInstrumentCategory().name());
+        slippageNode.put("mode", slippagePolicy.getMode().name());
+        putNullableBigDecimal(slippageNode, "maxPips", slippagePolicy.getMaxPips());
+        putNullableBigDecimal(slippageNode, "maxPrice", slippagePolicy.getMaxPrice());
+        putNullableInteger(slippageNode, "maxDeviationPoints", follower.getRisk().getMaxSlippagePoints());
+
+        ObjectNode instrumentMeta = payload.putObject("instrumentMeta");
+        putNullableString(instrumentMeta, "sourceSymbol", command.getMasterSymbol());
+        payload.put("targetSymbol", command.getSymbol());
+        putNullableInteger(instrumentMeta, "digits", readInteger(signal.getPayload(), "symbol_digits"));
+        putNullableBigDecimal(instrumentMeta, "point", readDecimal(signal.getPayload(), "symbol_point"));
+        putNullableBigDecimal(instrumentMeta, "tickSize", readDecimal(signal.getPayload(), "symbol_tick_size"));
+        putNullableBigDecimal(instrumentMeta, "tickValue", readDecimal(signal.getPayload(), "symbol_tick_value"));
+        putNullableBigDecimal(instrumentMeta, "contractSize", readDecimal(signal.getPayload(), "symbol_contract_size"));
+        putNullableBigDecimal(instrumentMeta, "volumeStep", readDecimal(signal.getPayload(), "symbol_volume_step"));
+        putNullableBigDecimal(instrumentMeta, "volumeMin", readDecimal(signal.getPayload(), "symbol_volume_min"));
+        putNullableBigDecimal(instrumentMeta, "volumeMax", readDecimal(signal.getPayload(), "symbol_volume_max"));
+        putNullableString(instrumentMeta, "currencyBase", readText(signal.getPayload(), "symbol_currency_base"));
+        putNullableString(instrumentMeta, "currencyProfit", readText(signal.getPayload(), "symbol_currency_profit"));
+        putNullableString(instrumentMeta, "currencyMargin", readText(signal.getPayload(), "symbol_currency_margin"));
 
         ObjectNode masterSignal = payload.putObject("masterSignal");
         putNullableLong(masterSignal, "login", signal.getLogin());
@@ -652,8 +704,17 @@ public class CopyEngineService {
         putNullableBigDecimal(masterSignal, "tp", readDecimal(signal.getPayload(), "tp"));
         putNullableBigDecimal(masterSignal, "volInit", readDecimal(signal.getPayload(), "vol_init"));
         putNullableBigDecimal(masterSignal, "volCur", readDecimal(signal.getPayload(), "vol_cur"));
+        putNullableBigDecimal(masterSignal, "accountBalance", readDecimal(signal.getPayload(), "account_balance"));
+        putNullableBigDecimal(masterSignal, "accountEquity", readDecimal(signal.getPayload(), "account_equity"));
+        putNullableBigDecimal(masterSignal, "positionVolumeBefore", readDecimal(signal.getPayload(), "position_volume_before"));
+        putNullableBigDecimal(masterSignal, "positionVolumeAfter", readDecimal(signal.getPayload(), "position_volume_after"));
         putNullableString(masterSignal, "comment", readText(signal.getPayload(), "comment"));
         putNullableLong(masterSignal, "magic", readLong(signal.getPayload(), "magic"));
+
+        if (command.getCommandType() == ExecutionCommandType.CLOSE_POSITION) {
+            putNullableBigDecimal(payload, "closeRatio", resolveCloseRatio(signal.getPayload()));
+            payload.put("closeAll", isCloseAll(signal.getPayload()));
+        }
 
         try {
             return objectMapper.writeValueAsString(payload);
@@ -736,6 +797,89 @@ public class CopyEngineService {
 
     private BigDecimal readDecimal(JsonNode payload, String field) {
         return payload.hasNonNull(field) ? payload.path(field).decimalValue() : null;
+    }
+
+    private BigDecimal resolveConfiguredRiskRatio(FollowerRiskCacheSnapshot risk) {
+        if (risk.getBalanceRatio() == null) {
+            return BigDecimal.ONE;
+        }
+        return risk.getBalanceRatio().compareTo(BigDecimal.ZERO) > 0 ? risk.getBalanceRatio() : null;
+    }
+
+    private BigDecimal resolveConfiguredRiskRatioOrDefault(CopyMode copyMode, FollowerRiskCacheSnapshot risk) {
+        if (copyMode != CopyMode.BALANCE_RATIO && copyMode != CopyMode.EQUITY_RATIO) {
+            return null;
+        }
+        return resolveConfiguredRiskRatio(risk);
+    }
+
+    private BigDecimal resolveAccountScaleRatio(CopyMode copyMode, JsonNode signalPayload, Long followerAccountId) {
+        if (copyMode != CopyMode.BALANCE_RATIO && copyMode != CopyMode.EQUITY_RATIO) {
+            return null;
+        }
+
+        BigDecimal masterFunds = resolveMasterFunds(copyMode, signalPayload);
+        BigDecimal followerFunds = resolveFollowerFunds(copyMode, followerAccountId);
+        if (masterFunds == null
+                || followerFunds == null
+                || masterFunds.compareTo(BigDecimal.ZERO) <= 0
+                || followerFunds.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ONE;
+        }
+        return followerFunds.divide(masterFunds, 8, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal resolveMasterFunds(CopyMode copyMode, JsonNode signalPayload) {
+        if (copyMode == CopyMode.BALANCE_RATIO) {
+            return readDecimal(signalPayload, "account_balance");
+        }
+        if (copyMode == CopyMode.EQUITY_RATIO) {
+            return readDecimal(signalPayload, "account_equity");
+        }
+        return null;
+    }
+
+    private BigDecimal resolveFollowerFunds(CopyMode copyMode, Long followerAccountId) {
+        if (followerAccountId == null) {
+            return null;
+        }
+        return runtimeStateRepository.findByAccountId(followerAccountId)
+                .map(state -> {
+                    if (copyMode == CopyMode.BALANCE_RATIO) {
+                        return state.getBalance();
+                    }
+                    if (copyMode == CopyMode.EQUITY_RATIO) {
+                        return state.getEquity();
+                    }
+                    return null;
+                })
+                .orElse(null);
+    }
+
+    private BigDecimal resolveCloseRatio(JsonNode signalPayload) {
+        BigDecimal positionVolumeBefore = readDecimal(signalPayload, "position_volume_before");
+        BigDecimal closeVolume = readDecimal(signalPayload, "volume");
+        if (positionVolumeBefore == null
+                || closeVolume == null
+                || positionVolumeBefore.compareTo(BigDecimal.ZERO) <= 0
+                || closeVolume.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        BigDecimal ratio = closeVolume.divide(positionVolumeBefore, 8, RoundingMode.HALF_UP);
+        return ratio.compareTo(BigDecimal.ONE) > 0 ? BigDecimal.ONE : ratio;
+    }
+
+    private boolean isCloseAll(JsonNode signalPayload) {
+        BigDecimal positionVolumeAfter = readDecimal(signalPayload, "position_volume_after");
+        if (positionVolumeAfter != null) {
+            return positionVolumeAfter.compareTo(BigDecimal.ZERO) <= 0;
+        }
+
+        BigDecimal positionVolumeBefore = readDecimal(signalPayload, "position_volume_before");
+        BigDecimal closeVolume = readDecimal(signalPayload, "volume");
+        return positionVolumeBefore != null
+                && closeVolume != null
+                && closeVolume.compareTo(positionVolumeBefore) >= 0;
     }
 
     private String readText(JsonNode payload, String field) {

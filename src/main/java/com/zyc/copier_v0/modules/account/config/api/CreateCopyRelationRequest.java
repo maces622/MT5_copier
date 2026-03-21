@@ -13,7 +13,7 @@ public class CreateCopyRelationRequest {
     private Long followerAccountId;
 
     @NotNull
-    private CopyMode copyMode;
+    private CopyMode copyMode = CopyMode.BALANCE_RATIO;
 
     private CopyRelationStatus status = CopyRelationStatus.ACTIVE;
 

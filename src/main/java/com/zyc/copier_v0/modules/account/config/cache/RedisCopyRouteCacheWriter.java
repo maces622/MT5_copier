@@ -16,50 +16,52 @@ public class RedisCopyRouteCacheWriter implements CopyRouteCacheWriter {
 
     private final StringRedisTemplate stringRedisTemplate;
     private final CopyRouteSnapshotFactory snapshotFactory;
-    private final AccountRouteCacheProperties properties;
+    private final CopyRouteCacheKeyResolver keyResolver;
     private final ObjectMapper objectMapper;
 
     public RedisCopyRouteCacheWriter(
             StringRedisTemplate stringRedisTemplate,
             CopyRouteSnapshotFactory snapshotFactory,
-            AccountRouteCacheProperties properties,
+            CopyRouteCacheKeyResolver keyResolver,
             ObjectMapper objectMapper
     ) {
         this.stringRedisTemplate = stringRedisTemplate;
         this.snapshotFactory = snapshotFactory;
-        this.properties = properties;
+        this.keyResolver = keyResolver;
         this.objectMapper = objectMapper;
     }
 
     @Override
     public void refreshMasterRoute(Long masterAccountId) {
         MasterRouteCacheSnapshot snapshot = snapshotFactory.buildMasterRoute(masterAccountId);
-        stringRedisTemplate.opsForValue().set(masterRouteKey(masterAccountId), writeJson(snapshot));
-        stringRedisTemplate.opsForValue().set(masterRouteVersionKey(masterAccountId), String.valueOf(snapshot.getRouteVersion()));
-        for (FollowerRouteCacheItem follower : snapshot.getFollowers()) {
-            stringRedisTemplate.opsForValue().set(followerRiskKey(follower.getFollowerAccountId()), writeJson(follower.getRisk()));
+        try {
+            stringRedisTemplate.opsForValue().set(keyResolver.masterRouteKey(masterAccountId), writeJson(snapshot));
+            stringRedisTemplate.opsForValue().set(
+                    keyResolver.masterRouteVersionKey(masterAccountId),
+                    String.valueOf(snapshot.getRouteVersion())
+            );
+            for (FollowerRouteCacheItem follower : snapshot.getFollowers()) {
+                stringRedisTemplate.opsForValue().set(
+                        keyResolver.followerRiskKey(follower.getFollowerAccountId()),
+                        writeJson(follower.getRisk())
+                );
+            }
+            log.info("Refresh master route cache in redis, masterAccountId={}, followers={}",
+                    masterAccountId, snapshot.getFollowers().size());
+        } catch (RuntimeException ex) {
+            log.warn("Failed to refresh master route cache in redis, masterAccountId={}", masterAccountId, ex);
         }
-        log.info("Refresh master route cache in redis, masterAccountId={}, followers={}",
-                masterAccountId, snapshot.getFollowers().size());
     }
 
     @Override
     public void refreshFollowerRisk(Long followerAccountId) {
         FollowerRiskCacheSnapshot snapshot = snapshotFactory.buildFollowerRisk(followerAccountId);
-        stringRedisTemplate.opsForValue().set(followerRiskKey(followerAccountId), writeJson(snapshot));
-        log.info("Refresh follower risk cache in redis, followerAccountId={}", followerAccountId);
-    }
-
-    private String masterRouteKey(Long masterAccountId) {
-        return properties.getKeyPrefix() + ":route:master:" + masterAccountId;
-    }
-
-    private String masterRouteVersionKey(Long masterAccountId) {
-        return properties.getKeyPrefix() + ":route:version:" + masterAccountId;
-    }
-
-    private String followerRiskKey(Long followerAccountId) {
-        return properties.getKeyPrefix() + ":account:risk:" + followerAccountId;
+        try {
+            stringRedisTemplate.opsForValue().set(keyResolver.followerRiskKey(followerAccountId), writeJson(snapshot));
+            log.info("Refresh follower risk cache in redis, followerAccountId={}", followerAccountId);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to refresh follower risk cache in redis, followerAccountId={}", followerAccountId, ex);
+        }
     }
 
     private String writeJson(Object value) {
