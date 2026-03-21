@@ -10,7 +10,6 @@ import com.zyc.copier_v0.modules.account.config.entity.Mt5AccountEntity;
 import com.zyc.copier_v0.modules.account.config.repository.Mt5AccountRepository;
 import com.zyc.copier_v0.modules.copy.engine.domain.FollowerDispatchStatus;
 import com.zyc.copier_v0.modules.copy.engine.entity.FollowerDispatchOutboxEntity;
-import com.zyc.copier_v0.modules.copy.engine.event.FollowerDispatchCreatedEvent;
 import com.zyc.copier_v0.modules.copy.engine.repository.FollowerDispatchOutboxRepository;
 import com.zyc.copier_v0.modules.copy.followerexec.api.FollowerExecSessionResponse;
 import com.zyc.copier_v0.modules.copy.followerexec.config.FollowerExecWebSocketProperties;
@@ -30,8 +29,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.event.TransactionPhase;
-import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
@@ -111,11 +108,6 @@ public class FollowerExecWebSocketService {
                 .toList();
     }
 
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-    public void onFollowerDispatchCreated(FollowerDispatchCreatedEvent event) {
-        pushDispatchIfFollowerOnline(event.getFollowerAccountId(), event.getDispatchId());
-    }
-
     private void handleHello(String sessionId, String traceId, JsonNode payload) {
         Mt5AccountEntity followerAccount = resolveFollowerAccount(payload);
         validateFollowerAccount(followerAccount);
@@ -141,7 +133,7 @@ public class FollowerExecWebSocketService {
                 .findByFollowerAccountIdAndStatusOrderByIdAsc(followerAccount.getId(), FollowerDispatchStatus.PENDING);
         sendHelloAck(sessionId, traceId, followerAccount, pendingDispatches.size());
         for (FollowerDispatchOutboxEntity dispatch : pendingDispatches) {
-            pushDispatchIfFollowerOnline(followerAccount.getId(), dispatch.getId());
+            tryPushPendingDispatch(followerAccount.getId(), dispatch.getId());
         }
     }
 
@@ -278,24 +270,28 @@ public class FollowerExecWebSocketService {
         }
     }
 
-    private void pushDispatchIfFollowerOnline(Long followerAccountId, Long dispatchId) {
+    public boolean tryPushPendingDispatch(Long followerAccountId, Long dispatchId) {
         if (followerAccountId == null || dispatchId == null) {
-            return;
+            return false;
         }
 
         Optional<String> sessionIdOptional = sessionRegistry.findSessionIdByFollowerAccountId(followerAccountId);
         if (!sessionIdOptional.isPresent()) {
-            return;
+            return false;
         }
 
         WebSocketSession session = liveSessions.get(sessionIdOptional.get());
         if (session == null || !session.isOpen()) {
-            return;
+            return false;
         }
 
-        followerDispatchOutboxRepository.findById(dispatchId)
+        return followerDispatchOutboxRepository.findById(dispatchId)
                 .filter(dispatch -> dispatch.getStatus() == FollowerDispatchStatus.PENDING)
-                .ifPresent(dispatch -> sendDispatch(sessionIdOptional.get(), session, dispatch));
+                .map(dispatch -> {
+                    sendDispatch(sessionIdOptional.get(), session, dispatch);
+                    return true;
+                })
+                .orElse(false);
     }
 
     private void sendHelloAck(

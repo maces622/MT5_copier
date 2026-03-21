@@ -79,7 +79,9 @@ public class AccountConfigService {
         account.setAccountRole(request.getAccountRole());
         account.setStatus(request.getStatus());
 
-        return toAccountResponse(mt5AccountRepository.save(account));
+        Mt5AccountEntity saved = mt5AccountRepository.save(account);
+        routeCacheWriter.refreshAccountBinding(saved);
+        return toAccountResponse(saved);
     }
 
     @Transactional(readOnly = true)

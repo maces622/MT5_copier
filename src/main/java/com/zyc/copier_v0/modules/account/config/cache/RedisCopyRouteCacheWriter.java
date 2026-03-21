@@ -2,6 +2,7 @@ package com.zyc.copier_v0.modules.account.config.cache;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zyc.copier_v0.modules.account.config.entity.Mt5AccountEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -16,17 +17,20 @@ public class RedisCopyRouteCacheWriter implements CopyRouteCacheWriter {
 
     private final StringRedisTemplate stringRedisTemplate;
     private final CopyRouteSnapshotFactory snapshotFactory;
+    private final Mt5AccountBindingSnapshotFactory accountBindingSnapshotFactory;
     private final CopyRouteCacheKeyResolver keyResolver;
     private final ObjectMapper objectMapper;
 
     public RedisCopyRouteCacheWriter(
             StringRedisTemplate stringRedisTemplate,
             CopyRouteSnapshotFactory snapshotFactory,
+            Mt5AccountBindingSnapshotFactory accountBindingSnapshotFactory,
             CopyRouteCacheKeyResolver keyResolver,
             ObjectMapper objectMapper
     ) {
         this.stringRedisTemplate = stringRedisTemplate;
         this.snapshotFactory = snapshotFactory;
+        this.accountBindingSnapshotFactory = accountBindingSnapshotFactory;
         this.keyResolver = keyResolver;
         this.objectMapper = objectMapper;
     }
@@ -61,6 +65,23 @@ public class RedisCopyRouteCacheWriter implements CopyRouteCacheWriter {
             log.info("Refresh follower risk cache in redis, followerAccountId={}", followerAccountId);
         } catch (RuntimeException ex) {
             log.warn("Failed to refresh follower risk cache in redis, followerAccountId={}", followerAccountId, ex);
+        }
+    }
+
+    @Override
+    public void refreshAccountBinding(Mt5AccountEntity account) {
+        if (account == null || account.getId() == null) {
+            return;
+        }
+        try {
+            stringRedisTemplate.opsForValue().set(
+                    keyResolver.accountBindingKey(account.getServerName(), account.getMt5Login()),
+                    writeJson(accountBindingSnapshotFactory.buildSnapshot(account))
+            );
+            log.info("Refresh account binding cache in redis, accountId={}, accountKey={}:{}",
+                    account.getId(), account.getServerName(), account.getMt5Login());
+        } catch (RuntimeException ex) {
+            log.warn("Failed to refresh account binding cache in redis, accountId={}", account.getId(), ex);
         }
     }
 

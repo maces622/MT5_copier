@@ -22,4 +22,8 @@ public class CopyRouteCacheKeyResolver {
     public String followerRiskKey(Long followerAccountId) {
         return properties.getKeyPrefix() + ":account:risk:" + followerAccountId;
     }
+
+    public String accountBindingKey(String serverName, Long mt5Login) {
+        return properties.getKeyPrefix() + ":account:binding:" + serverName + ":" + mt5Login;
+    }
 }

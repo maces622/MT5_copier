@@ -40,7 +40,7 @@ copier:
       secret: ${CREDENTIAL_SECRET:dev-credential-secret}
   account-config:
     route-cache:
-      backend: ${ACCOUNT_ROUTE_CACHE_BACKEND:log}
+      backend: ${COPIER_ACCOUNT_CONFIG_ROUTE_CACHE_BACKEND:${ACCOUNT_ROUTE_CACHE_BACKEND:log}}
       key-prefix: ${ACCOUNT_ROUTE_CACHE_KEY_PREFIX:copy}
   mt5:
     signal-ingest:
@@ -48,16 +48,26 @@ copier:
       bearer-token: ${MT5_SIGNAL_BEARER_TOKEN:dev-mt5-token}
       allow-query-token: true
       dedup-ttl: PT5M
+      dedup-backend: ${COPIER_MT5_SIGNAL_INGEST_DEDUP_BACKEND:${MT5_SIGNAL_DEDUP_BACKEND:memory}}
+      dedup-key-prefix: ${MT5_SIGNAL_DEDUP_KEY_PREFIX:copy:signal:dedup}
     follower-exec:
       path: /ws/follower-exec
       bearer-token: ${MT5_FOLLOWER_EXEC_BEARER_TOKEN:dev-follower-token}
       allow-query-token: true
       heartbeat-stale-after: PT15S
+      realtime-dispatch:
+        backend: ${COPIER_MT5_FOLLOWER_EXEC_REALTIME_DISPATCH_BACKEND:${FOLLOWER_EXEC_REALTIME_DISPATCH_BACKEND:local}}
+        channel: ${COPIER_MT5_FOLLOWER_EXEC_REALTIME_DISPATCH_CHANNEL:${FOLLOWER_EXEC_REALTIME_DISPATCH_CHANNEL:copy:follower:dispatch}}
+        node-id: ${COPIER_MT5_FOLLOWER_EXEC_REALTIME_DISPATCH_NODE_ID:${spring.application.name}:${random.uuid}}
   monitor:
     heartbeat-stale-after: ${MONITOR_HEARTBEAT_STALE_AFTER:PT10S}
+    session-registry:
+      backend: ${COPIER_MONITOR_SESSION_REGISTRY_BACKEND:${WS_SESSION_REGISTRY_BACKEND:memory}}
+      key-prefix: ${WS_SESSION_REGISTRY_KEY_PREFIX:copy:ws}
+      ttl: ${WS_SESSION_REGISTRY_TTL:PT2M}
   copy-engine:
     slippage:
-      enabled: ${COPY_ENGINE_SLIPPAGE_ENABLED:false}
+      enabled: ${COPIER_COPY_ENGINE_SLIPPAGE_ENABLED:${COPY_ENGINE_SLIPPAGE_ENABLED:false}}
       fx-and-gold-max-pips: ${COPY_ENGINE_SLIPPAGE_FX_AND_GOLD_MAX_PIPS:10}
       other-symbol-max-price: ${COPY_ENGINE_SLIPPAGE_OTHER_SYMBOL_MAX_PRICE:20.0}
 

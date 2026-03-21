@@ -2,6 +2,8 @@ package com.zyc.copier_v0.modules.monitor.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zyc.copier_v0.modules.account.config.cache.CopyRouteSnapshotReader;
+import com.zyc.copier_v0.modules.account.config.cache.Mt5AccountBindingCacheSnapshot;
 import com.zyc.copier_v0.modules.account.config.domain.CopyRelationStatus;
 import com.zyc.copier_v0.modules.account.config.domain.Mt5AccountRole;
 import com.zyc.copier_v0.modules.account.config.entity.CopyRelationEntity;
@@ -49,6 +51,7 @@ public class AccountMonitorService {
     private final CopyRelationRepository copyRelationRepository;
     private final FollowerDispatchOutboxRepository followerDispatchOutboxRepository;
     private final Mt5SessionRegistry mt5SessionRegistry;
+    private final CopyRouteSnapshotReader copyRouteSnapshotReader;
     private final ObjectMapper objectMapper;
     private final MonitorProperties monitorProperties;
 
@@ -59,6 +62,7 @@ public class AccountMonitorService {
             CopyRelationRepository copyRelationRepository,
             FollowerDispatchOutboxRepository followerDispatchOutboxRepository,
             Mt5SessionRegistry mt5SessionRegistry,
+            CopyRouteSnapshotReader copyRouteSnapshotReader,
             ObjectMapper objectMapper,
             MonitorProperties monitorProperties
     ) {
@@ -68,6 +72,7 @@ public class AccountMonitorService {
         this.copyRelationRepository = copyRelationRepository;
         this.followerDispatchOutboxRepository = followerDispatchOutboxRepository;
         this.mt5SessionRegistry = mt5SessionRegistry;
+        this.copyRouteSnapshotReader = copyRouteSnapshotReader;
         this.objectMapper = objectMapper;
         this.monitorProperties = monitorProperties;
     }
@@ -247,8 +252,8 @@ public class AccountMonitorService {
         if (!StringUtils.hasText(server) || login == null) {
             return null;
         }
-        Optional<Mt5AccountEntity> account = mt5AccountRepository.findByServerNameAndMt5Login(server, login);
-        return account.map(Mt5AccountEntity::getId).orElse(null);
+        Optional<Mt5AccountBindingCacheSnapshot> account = copyRouteSnapshotReader.loadAccountBinding(server, login);
+        return account.map(Mt5AccountBindingCacheSnapshot::getAccountId).orElse(null);
     }
 
     private String writePayload(NormalizedMt5Signal signal) {

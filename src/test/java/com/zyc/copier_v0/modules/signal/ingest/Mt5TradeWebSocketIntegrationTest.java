@@ -21,6 +21,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpHeaders;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.web.server.LocalServerPort;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.WebSocketSession;
@@ -30,10 +31,18 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
+                "spring.datasource.url=jdbc:h2:mem:mt5trade;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
+                "spring.datasource.driver-class-name=org.h2.Driver",
+                "spring.jpa.hibernate.ddl-auto=create-drop",
+                "copier.account-config.route-cache.backend=log",
                 "copier.mt5.signal-ingest.bearer-token=test-token",
-                "copier.mt5.signal-ingest.dedup-ttl=PT10M"
+                "copier.mt5.signal-ingest.dedup-ttl=PT10M",
+                "copier.mt5.signal-ingest.dedup-backend=memory",
+                "copier.monitor.session-registry.backend=memory",
+                "copier.mt5.follower-exec.realtime-dispatch.backend=local"
         }
 )
+@ActiveProfiles("test")
 class Mt5TradeWebSocketIntegrationTest {
 
     @LocalServerPort

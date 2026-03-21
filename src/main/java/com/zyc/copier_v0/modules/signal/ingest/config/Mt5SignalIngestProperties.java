@@ -24,4 +24,10 @@ public class Mt5SignalIngestProperties {
 
     @NotNull
     private Duration dedupTtl = Duration.ofMinutes(5);
+
+    @NotNull
+    private Mt5SignalDedupBackend dedupBackend = Mt5SignalDedupBackend.MEMORY;
+
+    @NotBlank
+    private String dedupKeyPrefix = "copy:signal:dedup";
 }

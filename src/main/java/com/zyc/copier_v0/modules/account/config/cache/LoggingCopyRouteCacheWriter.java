@@ -1,5 +1,6 @@
 package com.zyc.copier_v0.modules.account.config.cache;
 
+import com.zyc.copier_v0.modules.account.config.entity.Mt5AccountEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -32,5 +33,14 @@ public class LoggingCopyRouteCacheWriter implements CopyRouteCacheWriter {
                 snapshot.getMaxLot() != null
                         || snapshot.getFixedLot() != null
                         || snapshot.getBalanceRatio() != null);
+    }
+
+    @Override
+    public void refreshAccountBinding(Mt5AccountEntity account) {
+        if (account == null || account.getId() == null) {
+            return;
+        }
+        log.info("Refresh account binding cache via log backend, accountId={}, accountKey={}:{}",
+                account.getId(), account.getServerName(), account.getMt5Login());
     }
 }

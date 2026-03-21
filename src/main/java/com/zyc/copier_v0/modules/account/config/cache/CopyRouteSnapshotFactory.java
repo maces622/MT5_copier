@@ -8,8 +8,12 @@ import com.zyc.copier_v0.modules.account.config.repository.CopyRelationRepositor
 import com.zyc.copier_v0.modules.account.config.repository.RiskRuleRepository;
 import com.zyc.copier_v0.modules.account.config.repository.SymbolMappingRepository;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,15 +45,29 @@ public class CopyRouteSnapshotFactory {
         MasterRouteCacheSnapshot snapshot = new MasterRouteCacheSnapshot();
         snapshot.setMasterAccountId(masterAccountId);
 
+        List<Long> followerIds = relations.stream()
+                .map(relation -> relation.getFollowerAccount().getId())
+                .collect(java.util.stream.Collectors.collectingAndThen(
+                        java.util.stream.Collectors.toCollection(LinkedHashSet::new),
+                        ArrayList::new
+                ));
+        Map<Long, RiskRuleEntity> riskRuleByFollowerId = loadRiskRules(followerIds);
+        Map<Long, Map<String, String>> symbolMappingsByFollowerId = loadSymbolMappings(followerIds);
+
         long routeVersion = 0L;
         List<FollowerRouteCacheItem> followers = new ArrayList<>();
         for (CopyRelationEntity relation : relations) {
+            Long followerAccountId = relation.getFollowerAccount().getId();
             FollowerRouteCacheItem item = new FollowerRouteCacheItem();
-            item.setFollowerAccountId(relation.getFollowerAccount().getId());
+            item.setFollowerAccountId(followerAccountId);
             item.setCopyMode(relation.getCopyMode());
             item.setPriority(relation.getPriority());
             item.setConfigVersion(relation.getConfigVersion());
-            item.setRisk(buildFollowerRisk(relation.getFollowerAccount().getId()));
+            item.setRisk(buildFollowerRisk(
+                    followerAccountId,
+                    riskRuleByFollowerId.get(followerAccountId),
+                    symbolMappingsByFollowerId.getOrDefault(followerAccountId, Collections.emptyMap())
+            ));
             followers.add(item);
             routeVersion = Math.max(routeVersion, relation.getConfigVersion());
         }
@@ -61,9 +79,61 @@ public class CopyRouteSnapshotFactory {
 
     public FollowerRiskCacheSnapshot buildFollowerRisk(Long followerAccountId) {
         RiskRuleEntity riskRule = riskRuleRepository.findByAccount_Id(followerAccountId).orElse(null);
+        return buildFollowerRisk(followerAccountId, riskRule, loadSymbolMappings(followerAccountId));
+    }
+
+    private Map<String, String> loadSymbolMappings(Long followerAccountId) {
+        List<SymbolMappingEntity> mappings = symbolMappingRepository.findByFollowerAccount_IdOrderByMasterSymbolAsc(followerAccountId);
+        if (mappings.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Map<String, String> snapshot = new LinkedHashMap<>();
+        for (SymbolMappingEntity mapping : mappings) {
+            snapshot.put(mapping.getMasterSymbol(), mapping.getFollowerSymbol());
+        }
+        return snapshot;
+    }
+
+    private Map<Long, RiskRuleEntity> loadRiskRules(Collection<Long> followerAccountIds) {
+        if (followerAccountIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Map<Long, RiskRuleEntity> riskRuleByFollowerId = new HashMap<>();
+        for (RiskRuleEntity riskRule : riskRuleRepository.findByAccount_IdIn(followerAccountIds)) {
+            riskRuleByFollowerId.put(riskRule.getAccount().getId(), riskRule);
+        }
+        return riskRuleByFollowerId;
+    }
+
+    private Map<Long, Map<String, String>> loadSymbolMappings(Collection<Long> followerAccountIds) {
+        if (followerAccountIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        List<SymbolMappingEntity> mappings = new ArrayList<>(symbolMappingRepository.findByFollowerAccount_IdIn(followerAccountIds));
+        mappings.sort(Comparator
+                .comparing((SymbolMappingEntity mapping) -> mapping.getFollowerAccount().getId())
+                .thenComparing(SymbolMappingEntity::getMasterSymbol));
+
+        Map<Long, Map<String, String>> mappingsByFollowerId = new LinkedHashMap<>();
+        for (SymbolMappingEntity mapping : mappings) {
+            mappingsByFollowerId
+                    .computeIfAbsent(mapping.getFollowerAccount().getId(), ignored -> new LinkedHashMap<>())
+                    .put(mapping.getMasterSymbol(), mapping.getFollowerSymbol());
+        }
+        return mappingsByFollowerId;
+    }
+
+    private FollowerRiskCacheSnapshot buildFollowerRisk(
+            Long followerAccountId,
+            RiskRuleEntity riskRule,
+            Map<String, String> symbolMappings
+    ) {
         FollowerRiskCacheSnapshot snapshot = new FollowerRiskCacheSnapshot();
         snapshot.setAccountId(followerAccountId);
-        snapshot.setSymbolMappings(loadSymbolMappings(followerAccountId));
+        snapshot.setSymbolMappings(symbolMappings);
         if (riskRule == null) {
             return snapshot;
         }
@@ -80,19 +150,6 @@ public class CopyRouteSnapshotFactory {
         snapshot.setBlockedSymbols(riskRule.getBlockedSymbols());
         snapshot.setFollowTpSl(riskRule.isFollowTpSl());
         snapshot.setReverseFollow(riskRule.isReverseFollow());
-        return snapshot;
-    }
-
-    private Map<String, String> loadSymbolMappings(Long followerAccountId) {
-        List<SymbolMappingEntity> mappings = symbolMappingRepository.findByFollowerAccount_IdOrderByMasterSymbolAsc(followerAccountId);
-        if (mappings.isEmpty()) {
-            return Collections.emptyMap();
-        }
-
-        Map<String, String> snapshot = new LinkedHashMap<>();
-        for (SymbolMappingEntity mapping : mappings) {
-            snapshot.put(mapping.getMasterSymbol(), mapping.getFollowerSymbol());
-        }
         return snapshot;
     }
 

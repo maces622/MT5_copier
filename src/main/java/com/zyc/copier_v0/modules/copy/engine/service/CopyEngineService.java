@@ -4,13 +4,12 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.zyc.copier_v0.modules.account.config.cache.CopyRouteSnapshotReader;
 import com.zyc.copier_v0.modules.account.config.cache.FollowerRiskCacheSnapshot;
 import com.zyc.copier_v0.modules.account.config.cache.FollowerRouteCacheItem;
 import com.zyc.copier_v0.modules.account.config.cache.MasterRouteCacheSnapshot;
-import com.zyc.copier_v0.modules.account.config.cache.CopyRouteSnapshotReader;
+import com.zyc.copier_v0.modules.account.config.cache.Mt5AccountBindingCacheSnapshot;
 import com.zyc.copier_v0.modules.account.config.domain.CopyMode;
-import com.zyc.copier_v0.modules.account.config.entity.Mt5AccountEntity;
-import com.zyc.copier_v0.modules.account.config.repository.Mt5AccountRepository;
 import com.zyc.copier_v0.modules.copy.engine.api.ExecutionCommandResponse;
 import com.zyc.copier_v0.modules.copy.engine.api.ExecutionTraceResponse;
 import com.zyc.copier_v0.modules.copy.engine.api.FollowerDispatchOutboxResponse;
@@ -53,7 +52,6 @@ public class CopyEngineService {
 
     private static final Logger log = LoggerFactory.getLogger(CopyEngineService.class);
 
-    private final Mt5AccountRepository mt5AccountRepository;
     private final CopyRouteSnapshotReader copyRouteSnapshotReader;
     private final ExecutionCommandRepository executionCommandRepository;
     private final FollowerDispatchOutboxRepository followerDispatchOutboxRepository;
@@ -63,7 +61,6 @@ public class CopyEngineService {
     private final ApplicationEventPublisher applicationEventPublisher;
 
     public CopyEngineService(
-            Mt5AccountRepository mt5AccountRepository,
             CopyRouteSnapshotReader copyRouteSnapshotReader,
             ExecutionCommandRepository executionCommandRepository,
             FollowerDispatchOutboxRepository followerDispatchOutboxRepository,
@@ -72,7 +69,6 @@ public class CopyEngineService {
             ObjectMapper objectMapper,
             ApplicationEventPublisher applicationEventPublisher
     ) {
-        this.mt5AccountRepository = mt5AccountRepository;
         this.copyRouteSnapshotReader = copyRouteSnapshotReader;
         this.executionCommandRepository = executionCommandRepository;
         this.followerDispatchOutboxRepository = followerDispatchOutboxRepository;
@@ -90,7 +86,7 @@ public class CopyEngineService {
             return;
         }
 
-        Optional<Mt5AccountEntity> masterAccountOptional = mt5AccountRepository.findByServerNameAndMt5Login(
+        Optional<Mt5AccountBindingCacheSnapshot> masterAccountOptional = copyRouteSnapshotReader.loadAccountBinding(
                 signal.getServer(),
                 signal.getLogin()
         );
@@ -101,11 +97,11 @@ public class CopyEngineService {
             return;
         }
 
-        Mt5AccountEntity masterAccount = masterAccountOptional.get();
-        MasterRouteCacheSnapshot routeSnapshot = copyRouteSnapshotReader.loadMasterRoute(masterAccount.getId());
+        Mt5AccountBindingCacheSnapshot masterAccount = masterAccountOptional.get();
+        MasterRouteCacheSnapshot routeSnapshot = copyRouteSnapshotReader.loadMasterRoute(masterAccount.getAccountId());
         if (routeSnapshot.getFollowers().isEmpty()) {
             log.info("No active followers for master account, masterAccountId={}, eventId={}",
-                    masterAccount.getId(), signal.getEventId());
+                    masterAccount.getAccountId(), signal.getEventId());
             return;
         }
 
@@ -116,7 +112,9 @@ public class CopyEngineService {
             )) {
                 continue;
             }
-            ExecutionCommandEntity command = executionCommandRepository.save(buildCommand(masterAccount, follower, signal));
+            ExecutionCommandEntity command = executionCommandRepository.save(
+                    buildCommand(masterAccount.getAccountId(), follower, signal)
+            );
             createDispatchOutboxIfNeeded(command, signal, follower);
         }
     }
@@ -208,18 +206,18 @@ public class CopyEngineService {
     }
 
     private ExecutionCommandEntity buildCommand(
-            Mt5AccountEntity masterAccount,
+            Long masterAccountId,
             FollowerRouteCacheItem follower,
             NormalizedMt5Signal signal
     ) {
         if (signal.getType() == Mt5SignalType.ORDER) {
-            return buildOrderCommand(masterAccount, follower, signal);
+            return buildOrderCommand(masterAccountId, follower, signal);
         }
-        return buildDealCommand(masterAccount, follower, signal);
+        return buildDealCommand(masterAccountId, follower, signal);
     }
 
     private ExecutionCommandEntity buildDealCommand(
-            Mt5AccountEntity masterAccount,
+            Long masterAccountId,
             FollowerRouteCacheItem follower,
             NormalizedMt5Signal signal
     ) {
@@ -231,7 +229,7 @@ public class CopyEngineService {
                 ? payload.path("volume").decimalValue()
                 : null;
 
-        ExecutionCommandEntity command = newBaseCommand(masterAccount, follower, signal, masterSymbol, followerSymbol);
+        ExecutionCommandEntity command = newBaseCommand(masterAccountId, follower, signal, masterSymbol, followerSymbol);
         command.setSignalType(Mt5SignalType.DEAL);
         command.setCommandType(resolveDealCommandType(action));
         command.setMasterAction(action);
@@ -263,7 +261,7 @@ public class CopyEngineService {
     }
 
     private ExecutionCommandEntity buildOrderCommand(
-            Mt5AccountEntity masterAccount,
+            Long masterAccountId,
             FollowerRouteCacheItem follower,
             NormalizedMt5Signal signal
     ) {
@@ -277,10 +275,12 @@ public class CopyEngineService {
         boolean marketOrder = isMarketOrder(orderType);
 
         if (marketOrder && ("ORDER_ADD".equalsIgnoreCase(eventName) || "ORDER_DELETE".equalsIgnoreCase(eventName))) {
-            return buildIgnoredOrderCommand(masterAccount, follower, signal, masterSymbol, followerSymbol, eventName, scope);
+            return buildIgnoredOrderCommand(
+                    masterAccountId, follower, signal, masterSymbol, followerSymbol, eventName, scope
+            );
         }
 
-        ExecutionCommandEntity command = newBaseCommand(masterAccount, follower, signal, masterSymbol, followerSymbol);
+        ExecutionCommandEntity command = newBaseCommand(masterAccountId, follower, signal, masterSymbol, followerSymbol);
         command.setSignalType(Mt5SignalType.ORDER);
         command.setMasterAction(eventName);
         command.setMasterOrderId(readLong(payload, "order"));
@@ -323,7 +323,7 @@ public class CopyEngineService {
     }
 
     private ExecutionCommandEntity buildIgnoredOrderCommand(
-            Mt5AccountEntity masterAccount,
+            Long masterAccountId,
             FollowerRouteCacheItem follower,
             NormalizedMt5Signal signal,
             String masterSymbol,
@@ -331,7 +331,7 @@ public class CopyEngineService {
             String eventName,
             String scope
     ) {
-        ExecutionCommandEntity command = newBaseCommand(masterAccount, follower, signal, masterSymbol, followerSymbol);
+        ExecutionCommandEntity command = newBaseCommand(masterAccountId, follower, signal, masterSymbol, followerSymbol);
         command.setSignalType(Mt5SignalType.ORDER);
         command.setCommandType(ExecutionCommandType.UPDATE_PENDING_ORDER);
         command.setMasterAction(eventName);
@@ -347,7 +347,7 @@ public class CopyEngineService {
     }
 
     private ExecutionCommandEntity newBaseCommand(
-            Mt5AccountEntity masterAccount,
+            Long masterAccountId,
             FollowerRouteCacheItem follower,
             NormalizedMt5Signal signal,
             String masterSymbol,
@@ -355,7 +355,7 @@ public class CopyEngineService {
     ) {
         ExecutionCommandEntity command = new ExecutionCommandEntity();
         command.setMasterEventId(signal.getEventId());
-        command.setMasterAccountId(masterAccount.getId());
+        command.setMasterAccountId(masterAccountId);
         command.setMasterAccountKey(signal.getMasterAccountKey());
         command.setFollowerAccountId(follower.getFollowerAccountId());
         command.setMasterSymbol(masterSymbol);

@@ -14,11 +14,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 @SpringBootTest
+@ActiveProfiles("test")
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:copyengine-slippage;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
@@ -26,6 +28,9 @@ import org.springframework.test.web.servlet.MvcResult;
         "spring.jpa.hibernate.ddl-auto=create-drop",
         "copier.account-config.route-cache.backend=log",
         "copier.mt5.signal-ingest.bearer-token=test-token",
+        "copier.mt5.signal-ingest.dedup-backend=memory",
+        "copier.monitor.session-registry.backend=memory",
+        "copier.mt5.follower-exec.realtime-dispatch.backend=local",
         "copier.copy-engine.slippage.enabled=true"
 })
 class CopyEngineSlippageIntegrationTest {

@@ -31,6 +31,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.web.server.LocalServerPort;
 import org.springframework.http.HttpHeaders;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.WebSocketSession;
@@ -45,10 +46,14 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
                 "spring.jpa.hibernate.ddl-auto=create-drop",
                 "copier.account-config.route-cache.backend=log",
                 "copier.mt5.signal-ingest.bearer-token=test-signal-token",
+                "copier.mt5.signal-ingest.dedup-backend=memory",
                 "copier.mt5.follower-exec.bearer-token=test-follower-token",
+                "copier.monitor.session-registry.backend=memory",
+                "copier.mt5.follower-exec.realtime-dispatch.backend=local",
                 "copier.mt5.follower-exec.heartbeat-stale-after=PT15S"
         }
 )
+@ActiveProfiles("test")
 class FollowerExecWebSocketIntegrationTest {
 
     @LocalServerPort

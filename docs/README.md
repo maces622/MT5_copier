@@ -4,9 +4,9 @@
 
 这套文档现在按三类状态管理：
 
-1. `已完成实现对齐`：文档内容已经和当前代码基本一致，可直接用于联调和排障。
-2. `部分完成，含目标设计`：文档既描述了当前实现，也保留了后续设计目标，阅读时需要结合状态总表。
-3. `仅目标设计 / 未实现`：文档描述的是目标架构或未来模块，当前仓库还没有对应实现。
+1. `已完成实现对齐`：文档内容已经和当前代码对齐，可直接用于联调、排障和本地初始化。
+2. `部分完成，含目标设计`：文档同时包含当前实现和后续目标，阅读时要结合状态总表判断哪些已经落地。
+3. `仅目标设计 / 未实现`：当前仓库没有对应运行时代码，文档保留给后续拆分或扩展时复用。
 
 当前代码状态以 [implementation-status.md](./implementation-status.md) 为准。
 
@@ -18,6 +18,15 @@
 4. [Follower Exec 服务](./modules/follower-exec-service.md)
 5. [监控服务](./modules/monitor-service.md)
 
+这些内容已经覆盖当前仓库真实可用的主链路：
+
+1. MT5 主端 EA 通过 `/ws/trade` 上报 `HELLO / HEARTBEAT / DEAL / ORDER`
+2. Java 侧完成主从账户绑定、风控、品种映射、主从关系持久化
+3. Copy Engine 生成 `execution_commands` 和 `follower_dispatch_outbox`
+4. Follower EA 通过 `/ws/follower-exec` 接收并执行开仓、平仓、TP/SL、挂单指令
+5. Redis 当前已经用于 route/risk/account-binding 缓存、信号去重、WebSocket session registry 和 follower realtime dispatch 协调
+6. 监控接口可以查看账户状态、运行态、信号审计和 WebSocket 会话
+
 ## 部分完成，含目标设计
 
 1. [总体架构](./architecture/overall-architecture.md)
@@ -26,10 +35,11 @@
 4. [MT5 Bridge 服务](./modules/mt5-bridge-service.md)
 5. [迭代工作流](./process/iteration-cycle.md)
 
-这些文档里包含一部分已经落地的内容，也包含后续迭代目标：
+这些文档里既有已经落地的内容，也有后续目标：
 
-1. MT5 上行信号接入、主从配置、复制指令生成、Follower 下行执行、监控聚合已经有代码。
-2. MQ、独立 Agent、网关拆分、完整多服务部署仍然是目标设计，不是当前仓库现状。
+1. MT5 上行接入、主从配置、Copy Engine、Follower 下行、监控聚合已经在当前仓库落地
+2. MQ、独立 Agent、网关拆分和完整多服务部署仍然属于目标设计
+3. Redis 已进入热路径，跨节点 follower 实时推送也已经通过 pub/sub 接通，但更重的 worker/claim 机制还没做
 
 ## 仅目标设计 / 未实现
 
@@ -38,25 +48,18 @@
 3. [实时通知服务](./modules/websocket-notification-service.md)
 4. [Agent 调度服务](./modules/agent-service.md)
 
-这些模块当前仓库没有对应运行时代码，保留文档是为了后续拆分服务时复用设计。
+这些模块当前没有对应运行时代码，文档保留用于后续演进。
 
 ## 当前代码重点
 
-当前仓库已经可以完成的主链路：
+当前仓库已经可用于本地 MariaDB + Redis 联调，建议先看：
 
-1. MT5 主端 EA 通过 `/ws/trade` 上报 `HELLO / HEARTBEAT / DEAL / ORDER`
-2. Java 侧完成主从账户绑定、风控、品种映射、关系配置的持久化
-3. Copy Engine 生成 `execution_commands` 和 `follower_dispatch_outbox`
-4. Follower EA 通过 `/ws/follower-exec` 接收下行指令并执行开仓、平仓、TP/SL 同步、挂单操作
-5. 监控接口可查看账户状态、运行态、信号审计、WebSocket 会话
-6. Redis 已用于主从路由和 follower 风控的读缓存、回填、启动预热
+1. [实现状态总表](./implementation-status.md)
+2. `src/main/resources/application-local.yml`
+3. `bootstrap/local.example.json`
 
-## 开发说明
+本地开发注意：
 
-项目已经引入 Lombok 来收缩 DTO、实体、配置属性和缓存快照样板代码。
-
-本地开发建议：
-
-1. 使用 Maven 或 IDEA 导入项目后启用 annotation processing
-2. 以 `local` profile 启动时使用 MariaDB 作为真源、Redis 作为缓存层
-3. 任何功能是否已经落地，先看 [implementation-status.md](./implementation-status.md)
+1. 项目已引入 Lombok，IDEA 需要开启 annotation processing
+2. `local` profile 下使用 MariaDB 作为真源，Redis 作为缓存和运行态共享层
+3. 是否已完成某项能力，先看 [implementation-status.md](./implementation-status.md)

@@ -6,8 +6,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zyc.copier_v0.modules.account.config.domain.AccountStatus;
+import com.zyc.copier_v0.modules.account.config.domain.Mt5AccountRole;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -26,6 +29,9 @@ class RedisCopyRouteSnapshotReaderTest {
     private CopyRouteSnapshotFactory snapshotFactory;
 
     @Mock
+    private Mt5AccountBindingSnapshotFactory accountBindingSnapshotFactory;
+
+    @Mock
     private ValueOperations<String, String> valueOperations;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -37,7 +43,13 @@ class RedisCopyRouteSnapshotReaderTest {
         AccountRouteCacheProperties properties = new AccountRouteCacheProperties();
         properties.setKeyPrefix("copy");
         keyResolver = new CopyRouteCacheKeyResolver(properties);
-        reader = new RedisCopyRouteSnapshotReader(stringRedisTemplate, snapshotFactory, keyResolver, objectMapper);
+        reader = new RedisCopyRouteSnapshotReader(
+                stringRedisTemplate,
+                snapshotFactory,
+                accountBindingSnapshotFactory,
+                keyResolver,
+                objectMapper
+        );
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
     }
 
@@ -92,6 +104,50 @@ class RedisCopyRouteSnapshotReaderTest {
         verify(snapshotFactory).buildMasterRoute(1L);
     }
 
+    @Test
+    void shouldLoadAccountBindingFromRedisWithoutDatabaseFallback() throws Exception {
+        Mt5AccountBindingCacheSnapshot cached = accountBindingSnapshot(1L, "Server-A", 10001L);
+        when(valueOperations.get(keyResolver.accountBindingKey("Server-A", 10001L)))
+                .thenReturn(objectMapper.writeValueAsString(cached));
+
+        Optional<Mt5AccountBindingCacheSnapshot> loaded = reader.loadAccountBinding("Server-A", 10001L);
+
+        assertThat(loaded).isPresent();
+        assertThat(loaded.orElseThrow().getAccountId()).isEqualTo(1L);
+        verify(accountBindingSnapshotFactory, never()).findByServerAndLogin("Server-A", 10001L);
+    }
+
+    @Test
+    void shouldFallbackToDatabaseAndBackfillRedisOnAccountBindingCacheMiss() {
+        Mt5AccountBindingCacheSnapshot databaseSnapshot = accountBindingSnapshot(1L, "Server-A", 10001L);
+        when(valueOperations.get(keyResolver.accountBindingKey("Server-A", 10001L))).thenReturn(null);
+        when(accountBindingSnapshotFactory.findByServerAndLogin("Server-A", 10001L))
+                .thenReturn(Optional.of(databaseSnapshot));
+
+        Optional<Mt5AccountBindingCacheSnapshot> loaded = reader.loadAccountBinding("Server-A", 10001L);
+
+        assertThat(loaded).isPresent();
+        verify(accountBindingSnapshotFactory).findByServerAndLogin("Server-A", 10001L);
+        verify(valueOperations).set(
+                org.mockito.ArgumentMatchers.eq(keyResolver.accountBindingKey("Server-A", 10001L)),
+                org.mockito.ArgumentMatchers.contains("\"accountId\":1")
+        );
+    }
+
+    @Test
+    void shouldNegativeCacheMissingAccountBinding() {
+        when(valueOperations.get(keyResolver.accountBindingKey("Unknown-Server", 99999L))).thenReturn(null);
+        when(accountBindingSnapshotFactory.findByServerAndLogin("Unknown-Server", 99999L)).thenReturn(Optional.empty());
+
+        Optional<Mt5AccountBindingCacheSnapshot> loaded = reader.loadAccountBinding("Unknown-Server", 99999L);
+
+        assertThat(loaded).isEmpty();
+        verify(valueOperations).set(
+                org.mockito.ArgumentMatchers.eq(keyResolver.accountBindingKey("Unknown-Server", 99999L)),
+                org.mockito.ArgumentMatchers.contains("\"serverName\":\"Unknown-Server\"")
+        );
+    }
+
     private MasterRouteCacheSnapshot masterRouteSnapshot(Long masterAccountId, Long followerAccountId) {
         FollowerRiskCacheSnapshot risk = new FollowerRiskCacheSnapshot();
         risk.setAccountId(followerAccountId);
@@ -109,6 +165,16 @@ class RedisCopyRouteSnapshotReaderTest {
         snapshot.setMasterAccountId(masterAccountId);
         snapshot.setRouteVersion(2L);
         snapshot.setFollowers(List.of(follower));
+        return snapshot;
+    }
+
+    private Mt5AccountBindingCacheSnapshot accountBindingSnapshot(Long accountId, String serverName, Long login) {
+        Mt5AccountBindingCacheSnapshot snapshot = new Mt5AccountBindingCacheSnapshot();
+        snapshot.setAccountId(accountId);
+        snapshot.setServerName(serverName);
+        snapshot.setMt5Login(login);
+        snapshot.setAccountRole(Mt5AccountRole.MASTER);
+        snapshot.setStatus(AccountStatus.ACTIVE);
         return snapshot;
     }
 }

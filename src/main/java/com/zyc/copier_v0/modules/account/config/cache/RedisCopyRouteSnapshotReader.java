@@ -2,6 +2,7 @@ package com.zyc.copier_v0.modules.account.config.cache;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -17,17 +18,20 @@ public class RedisCopyRouteSnapshotReader implements CopyRouteSnapshotReader {
 
     private final StringRedisTemplate stringRedisTemplate;
     private final CopyRouteSnapshotFactory snapshotFactory;
+    private final Mt5AccountBindingSnapshotFactory accountBindingSnapshotFactory;
     private final CopyRouteCacheKeyResolver keyResolver;
     private final ObjectMapper objectMapper;
 
     public RedisCopyRouteSnapshotReader(
             StringRedisTemplate stringRedisTemplate,
             CopyRouteSnapshotFactory snapshotFactory,
+            Mt5AccountBindingSnapshotFactory accountBindingSnapshotFactory,
             CopyRouteCacheKeyResolver keyResolver,
             ObjectMapper objectMapper
     ) {
         this.stringRedisTemplate = stringRedisTemplate;
         this.snapshotFactory = snapshotFactory;
+        this.accountBindingSnapshotFactory = accountBindingSnapshotFactory;
         this.keyResolver = keyResolver;
         this.objectMapper = objectMapper;
     }
@@ -53,6 +57,23 @@ public class RedisCopyRouteSnapshotReader implements CopyRouteSnapshotReader {
 
         FollowerRiskCacheSnapshot snapshot = snapshotFactory.buildFollowerRisk(followerAccountId);
         cacheFollowerRisk(followerAccountId, snapshot);
+        return snapshot;
+    }
+
+    @Override
+    public Optional<Mt5AccountBindingCacheSnapshot> loadAccountBinding(String serverName, Long mt5Login) {
+        if (!StringUtils.hasText(serverName) || mt5Login == null) {
+            return Optional.empty();
+        }
+
+        String key = keyResolver.accountBindingKey(serverName, mt5Login);
+        Mt5AccountBindingCacheSnapshot cached = readJson(key, Mt5AccountBindingCacheSnapshot.class);
+        if (cached != null) {
+            return cached.isBound() ? Optional.of(cached) : Optional.empty();
+        }
+
+        Optional<Mt5AccountBindingCacheSnapshot> snapshot = accountBindingSnapshotFactory.findByServerAndLogin(serverName, mt5Login);
+        cacheAccountBinding(key, snapshot.orElseGet(() -> Mt5AccountBindingCacheSnapshot.missing(serverName, mt5Login)));
         return snapshot;
     }
 
@@ -88,6 +109,17 @@ public class RedisCopyRouteSnapshotReader implements CopyRouteSnapshotReader {
             );
         } catch (RuntimeException ex) {
             log.warn("Failed to cache follower risk snapshot in redis, followerAccountId={}", followerAccountId, ex);
+        }
+    }
+
+    private void cacheAccountBinding(String key, Mt5AccountBindingCacheSnapshot snapshot) {
+        if (!StringUtils.hasText(key) || snapshot == null) {
+            return;
+        }
+        try {
+            stringRedisTemplate.opsForValue().set(key, writeJson(snapshot));
+        } catch (RuntimeException ex) {
+            log.warn("Failed to cache account binding snapshot in redis, key={}", key, ex);
         }
     }
 

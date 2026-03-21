@@ -70,6 +70,8 @@ public class Mt5SignalIngestService {
             sessionRegistry.bindAccount(sessionId, signal.getLogin(), signal.getServer());
         }
 
+        sessionRegistry.touch(sessionId);
+
         if (signal.getType().shouldDeduplicate() && !signalDedupService.markIfNew(signal.getEventId())) {
             log.info("Skip duplicate MT5 signal, eventId={}, sessionId={}", signal.getEventId(), sessionId);
             return;

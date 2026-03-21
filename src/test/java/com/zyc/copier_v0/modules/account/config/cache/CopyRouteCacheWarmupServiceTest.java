@@ -38,6 +38,8 @@ class CopyRouteCacheWarmupServiceTest {
 
         verify(snapshotReader, times(1)).loadMasterRoute(1L);
         verify(snapshotReader, times(1)).loadMasterRoute(4L);
+        verify(snapshotReader, times(1)).loadAccountBinding("Master-1", 10001L);
+        verify(snapshotReader, times(1)).loadAccountBinding("Master-4", 10004L);
         verify(snapshotReader, times(1)).loadFollowerRisk(2L);
         verify(snapshotReader, times(1)).loadFollowerRisk(3L);
     }
@@ -45,6 +47,8 @@ class CopyRouteCacheWarmupServiceTest {
     private CopyRelationEntity relation(Long masterAccountId, Long followerAccountId, CopyRelationStatus status) {
         Mt5AccountEntity master = new Mt5AccountEntity();
         ReflectionTestUtils.setField(master, "id", masterAccountId);
+        master.setServerName("Master-" + masterAccountId);
+        master.setMt5Login(10000L + masterAccountId);
         Mt5AccountEntity follower = new Mt5AccountEntity();
         ReflectionTestUtils.setField(follower, "id", followerAccountId);
 

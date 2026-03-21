@@ -27,11 +27,20 @@ copier:
   mt5:
     signal-ingest:
       bearer-token: change_me
+      dedup-backend: redis
+      dedup-key-prefix: copy:signal:dedup
     follower-exec:
       bearer-token: change_me
       heartbeat-stale-after: PT15S
+      realtime-dispatch:
+        backend: redis
+        channel: copy:follower:dispatch
   monitor:
     heartbeat-stale-after: PT10S
+    session-registry:
+      backend: redis
+      key-prefix: copy:ws
+      ttl: PT2M
   copy-engine:
     slippage:
       enabled: false
