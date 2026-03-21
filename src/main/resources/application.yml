@@ -1,0 +1,62 @@
+spring:
+  application:
+    name: copier_v0
+  jackson:
+    time-zone: UTC
+  datasource:
+    url: ${MYSQL_URL:jdbc:h2:mem:copier_v0;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE}
+    username: ${MYSQL_USERNAME:sa}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: ${MYSQL_DRIVER_CLASS_NAME:org.h2.Driver}
+  jpa:
+    hibernate:
+      ddl-auto: ${JPA_DDL_AUTO:update}
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+  data:
+    redis:
+      repositories:
+        enabled: false
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+
+server:
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+copier:
+  security:
+    credentials:
+      secret: ${CREDENTIAL_SECRET:dev-credential-secret}
+  account-config:
+    route-cache:
+      backend: ${ACCOUNT_ROUTE_CACHE_BACKEND:log}
+      key-prefix: ${ACCOUNT_ROUTE_CACHE_KEY_PREFIX:copy}
+  mt5:
+    signal-ingest:
+      path: /ws/trade
+      bearer-token: ${MT5_SIGNAL_BEARER_TOKEN:dev-mt5-token}
+      allow-query-token: true
+      dedup-ttl: PT5M
+    follower-exec:
+      path: /ws/follower-exec
+      bearer-token: ${MT5_FOLLOWER_EXEC_BEARER_TOKEN:dev-follower-token}
+      allow-query-token: true
+      heartbeat-stale-after: PT15S
+  monitor:
+    heartbeat-stale-after: ${MONITOR_HEARTBEAT_STALE_AFTER:PT10S}
+
+logging:
+  level:
+    com.zyc.copier_v0.modules.signal.ingest: INFO
+    com.zyc.copier_v0.modules.account.config: INFO
+    com.zyc.copier_v0.modules.copy.engine: INFO

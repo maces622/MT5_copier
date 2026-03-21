@@ -1,0 +1,15 @@
+package com.zyc.copier_v0.modules.copy.engine.domain;
+
+public enum ExecutionRejectReason {
+    MASTER_ACCOUNT_NOT_BOUND,
+    NO_ACTIVE_RELATION,
+    UNSUPPORTED_SIGNAL,
+    FIXED_LOT_MISSING,
+    RATIO_MISSING,
+    INVALID_VOLUME,
+    MAX_LOT_EXCEEDED,
+    SYMBOL_NOT_ALLOWED,
+    SYMBOL_BLOCKED,
+    FOLLOW_TP_SL_DISABLED,
+    ORDER_EVENT_NOT_SUPPORTED
+}

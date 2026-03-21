@@ -1,0 +1,35 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/copier_v0?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: root
+    password: change_me
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      password:
+      database: 0
+
+copier:
+  security:
+    credentials:
+      secret: change_me_to_a_strong_secret
+  account-config:
+    route-cache:
+      backend: redis
+      key-prefix: copy
+  mt5:
+    signal-ingest:
+      bearer-token: change_me
+    follower-exec:
+      bearer-token: change_me
+      heartbeat-stale-after: PT15S
+  monitor:
+    heartbeat-stale-after: PT10S
