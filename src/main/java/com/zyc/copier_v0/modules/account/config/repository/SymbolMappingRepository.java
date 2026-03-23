@@ -13,4 +13,6 @@ public interface SymbolMappingRepository extends JpaRepository<SymbolMappingEnti
     List<SymbolMappingEntity> findByFollowerAccount_IdOrderByMasterSymbolAsc(Long followerAccountId);
 
     List<SymbolMappingEntity> findByFollowerAccount_IdIn(Collection<Long> followerAccountIds);
+
+    void deleteByFollowerAccount_Id(Long followerAccountId);
 }

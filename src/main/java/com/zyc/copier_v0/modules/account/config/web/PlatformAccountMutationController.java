@@ -38,6 +38,14 @@ public class PlatformAccountMutationController {
         return platformAccountMutationService.bindMyAccount(request, servletRequest);
     }
 
+    @DeleteMapping("/accounts/{accountId}")
+    public void deleteMyAccount(
+            @PathVariable Long accountId,
+            HttpServletRequest servletRequest
+    ) {
+        platformAccountMutationService.deleteMyAccount(accountId, servletRequest);
+    }
+
     @PostMapping("/accounts/{accountId}/risk-rule")
     public RiskRuleResponse saveMyRiskRule(
             @PathVariable Long accountId,

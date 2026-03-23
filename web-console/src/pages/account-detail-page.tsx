@@ -1,7 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useParams } from '@tanstack/react-router'
+import { useNavigate, useParams } from '@tanstack/react-router'
 import {
   createCopyRelation,
+  deleteAccount,
   deleteCopyRelation,
   getAccountDetail,
   getMyAccounts,
@@ -100,6 +101,7 @@ function RelationRow({
 
 export function AccountDetailPage() {
   const { accountId } = useParams({ from: '/app/accounts/$accountId' })
+  const navigate = useNavigate()
   const detailQuery = useQuery({
     queryKey: ['accounts', 'detail', accountId],
     queryFn: () => getAccountDetail(accountId),
@@ -153,6 +155,13 @@ export function AccountDetailPage() {
       await invalidateAccountView(accountId)
     },
   })
+  const deleteAccountMutation = useMutation({
+    mutationFn: deleteAccount,
+    onSuccess: async () => {
+      await invalidateAccountCollections()
+      await navigate({ to: '/app/accounts' })
+    },
+  })
 
   if (detailQuery.isPending || myAccountsQuery.isPending) {
     return <LoadingState />
@@ -177,7 +186,25 @@ export function AccountDetailPage() {
       <PageHeader
         title={`账户 #${account.id}`}
         description={`${account.brokerName} / ${account.serverName} / ${account.mt5Login}`}
+        actions={
+          account.accountRole === 'FOLLOWER' ? (
+            <button
+              className="button button--ghost"
+              disabled={deleteAccountMutation.isPending}
+              onClick={() => {
+                if (!window.confirm(`删除 follower 账户 #${account.id} 后，会同时清理关系、风控和品种映射。确认继续？`)) {
+                  return
+                }
+                deleteAccountMutation.mutate(account.id)
+              }}
+              type="button"
+            >
+              {deleteAccountMutation.isPending ? '删除中...' : '删除 Follower 账户'}
+            </button>
+          ) : null
+        }
       />
+      {deleteAccountMutation.error ? <div className="inline-error">{deleteAccountMutation.error.message}</div> : null}
 
       <div className="two-column">
         <Surface title="基础信息">
@@ -453,8 +480,13 @@ export function AccountDetailPage() {
 }
 
 async function invalidateAccountView(accountId: string) {
-  await queryClient.invalidateQueries({ queryKey: ['accounts', 'mine'] })
   await queryClient.invalidateQueries({ queryKey: ['accounts', 'detail', accountId] })
+  await invalidateAccountCollections()
+}
+
+async function invalidateAccountCollections() {
+  await queryClient.invalidateQueries({ queryKey: ['accounts', 'mine'] })
+  await queryClient.invalidateQueries({ queryKey: ['relations', 'mine'] })
   await queryClient.invalidateQueries({ queryKey: ['share', 'profile'] })
   await queryClient.invalidateQueries({ queryKey: ['monitor', 'overview'] })
 }

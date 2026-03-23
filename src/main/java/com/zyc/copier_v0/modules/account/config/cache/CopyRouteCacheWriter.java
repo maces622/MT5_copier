@@ -9,4 +9,8 @@ public interface CopyRouteCacheWriter {
     void refreshFollowerRisk(Long followerAccountId);
 
     void refreshAccountBinding(Mt5AccountEntity account);
+
+    void evictFollowerRisk(Long followerAccountId);
+
+    void evictAccountBinding(String serverName, Long mt5Login);
 }

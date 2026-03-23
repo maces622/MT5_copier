@@ -5,16 +5,23 @@ import { getMonitorOverview, getMyAccounts } from '../lib/api'
 import { formatDateTime } from '../lib/format'
 import { DataTable, EmptyState, ErrorState, LoadingState, PageHeader, StatusPill, Surface } from '../components/common'
 
+const MONITOR_REFRESH_MS = 3000
+
 export function MonitorAccountsPage() {
   const [keyword, setKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
+
   const accountsQuery = useQuery({
     queryKey: ['accounts', 'mine'],
     queryFn: getMyAccounts,
+    refetchInterval: MONITOR_REFRESH_MS,
+    refetchIntervalInBackground: true,
   })
   const overviewQuery = useQuery({
     queryKey: ['monitor', 'overview'],
     queryFn: getMonitorOverview,
+    refetchInterval: MONITOR_REFRESH_MS,
+    refetchIntervalInBackground: true,
   })
 
   if (accountsQuery.isPending || overviewQuery.isPending) {
@@ -23,23 +30,18 @@ export function MonitorAccountsPage() {
 
   if (accountsQuery.error || overviewQuery.error) {
     const error = accountsQuery.error || overviewQuery.error
-    return <ErrorState message={error instanceof Error ? error.message : '请求失败'} />
+    return <ErrorState message={error instanceof Error ? error.message : 'Request failed'} />
   }
 
   const accountIds = new Set(accountsQuery.data!.map((account) => account.id))
+  const normalizedKeyword = keyword.trim().toLowerCase()
   const rows = overviewQuery.data!
     .filter((row) => accountIds.has(row.accountId))
+    .filter((row) => statusFilter === 'ALL' || row.connectionStatus === statusFilter)
     .filter((row) => {
-      if (statusFilter === 'ALL') {
+      if (!normalizedKeyword) {
         return true
       }
-      return row.connectionStatus === statusFilter
-    })
-    .filter((row) => {
-      if (!keyword.trim()) {
-        return true
-      }
-      const normalized = keyword.trim().toLowerCase()
       return [
         row.accountKey,
         row.brokerName,
@@ -49,20 +51,23 @@ export function MonitorAccountsPage() {
       ]
         .join(' ')
         .toLowerCase()
-        .includes(normalized)
+        .includes(normalizedKeyword)
     })
 
   return (
     <div className="page-stack">
       <PageHeader
-        title="账户监控台"
-        description="这一层主要面向运维，先看连接、runtime-state、dispatch 压力和失败情况。"
+        title="Account Monitor"
+        description="Watch connection status, runtime-state freshness, and dispatch pressure for your accounts."
       />
 
-      <Surface title="我的账户监控视图" description="先在前端做快速过滤，后续再视数据量决定是否下推后端查询参数。">
+      <Surface
+        title="My Monitor View"
+        description="The page refreshes automatically every few seconds so websocket and dispatch status stay current."
+      >
         <div className="toolbar">
           <label className="field">
-            <span>搜索</span>
+            <span>Search</span>
             <input
               placeholder="accountKey / broker / server / login"
               value={keyword}
@@ -70,20 +75,25 @@ export function MonitorAccountsPage() {
             />
           </label>
           <label className="field">
-            <span>连接状态</span>
+            <span>Connection</span>
             <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
               <option value="ALL">ALL</option>
               <option value="CONNECTED">CONNECTED</option>
+              <option value="STALE">STALE</option>
               <option value="DISCONNECTED">DISCONNECTED</option>
               <option value="UNKNOWN">UNKNOWN</option>
             </select>
           </label>
         </div>
+
         {rows.length === 0 ? (
-          <EmptyState title="当前没有监控数据" message="确认账户已绑定并至少有一次 HELLO / HEARTBEAT。" />
+          <EmptyState
+            title="No monitor data"
+            message="Make sure the account is bound and has reported at least one hello or heartbeat."
+          />
         ) : (
           <DataTable
-            headers={['Account', 'Role', 'Connection', 'Last Heartbeat', 'Pending', 'Failed', '详情']}
+            headers={['Account', 'Role', 'Connection', 'Last Heartbeat', 'Pending', 'Failed', 'Detail']}
             rows={rows.map((row) => [
               row.accountKey,
               row.accountRole,
@@ -92,7 +102,7 @@ export function MonitorAccountsPage() {
               row.pendingDispatchCount,
               row.failedDispatchCount,
               <Link className="text-link" params={{ accountId: String(row.accountId) }} to="/app/monitor/accounts/$accountId">
-                进入详情
+                Open
               </Link>,
             ])}
           />

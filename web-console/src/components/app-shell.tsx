@@ -1,6 +1,7 @@
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useMutation } from '@tanstack/react-query'
 import { logout } from '../lib/api'
+import { queryClient } from '../lib/query'
 import type { AuthenticatedPlatformUserResponse } from '../lib/types'
 
 const navItems = [
@@ -26,7 +27,9 @@ export function AppShell({ user }: { user: AuthenticatedPlatformUserResponse }) 
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: async () => {
-      await navigate({ to: '/login' })
+      await queryClient.cancelQueries()
+      queryClient.removeQueries()
+      await navigate({ to: '/login', replace: true })
     },
   })
 

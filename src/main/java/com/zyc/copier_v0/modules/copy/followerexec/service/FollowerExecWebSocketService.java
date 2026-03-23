@@ -10,6 +10,8 @@ import com.zyc.copier_v0.modules.account.config.entity.Mt5AccountEntity;
 import com.zyc.copier_v0.modules.account.config.repository.Mt5AccountRepository;
 import com.zyc.copier_v0.modules.copy.engine.domain.FollowerDispatchStatus;
 import com.zyc.copier_v0.modules.copy.engine.entity.FollowerDispatchOutboxEntity;
+import com.zyc.copier_v0.modules.copy.engine.persistence.CopyHotPathPersistenceQueue;
+import com.zyc.copier_v0.modules.copy.engine.persistence.CopyHotPathRedisStore;
 import com.zyc.copier_v0.modules.copy.engine.repository.FollowerDispatchOutboxRepository;
 import com.zyc.copier_v0.modules.copy.followerexec.api.FollowerExecSessionResponse;
 import com.zyc.copier_v0.modules.copy.followerexec.config.FollowerExecWebSocketProperties;
@@ -18,6 +20,7 @@ import com.zyc.copier_v0.modules.copy.followerexec.domain.FollowerExecSessionCon
 import com.zyc.copier_v0.modules.monitor.domain.Mt5ConnectionStatus;
 import com.zyc.copier_v0.modules.monitor.service.Mt5AccountRuntimeStateSnapshot;
 import com.zyc.copier_v0.modules.monitor.service.Mt5AccountRuntimeStateStore;
+import com.zyc.copier_v0.modules.monitor.service.Mt5PositionLedgerStore;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -46,6 +49,9 @@ public class FollowerExecWebSocketService {
     private final FollowerExecSessionRegistry sessionRegistry;
     private final FollowerExecWebSocketProperties properties;
     private final Mt5AccountRuntimeStateStore runtimeStateStore;
+    private final Mt5PositionLedgerStore positionLedgerStore;
+    private final CopyHotPathRedisStore hotPathRedisStore;
+    private final CopyHotPathPersistenceQueue hotPathPersistenceQueue;
     private final ConcurrentMap<String, WebSocketSession> liveSessions = new ConcurrentHashMap<>();
 
     public FollowerExecWebSocketService(
@@ -54,7 +60,10 @@ public class FollowerExecWebSocketService {
             FollowerDispatchOutboxRepository followerDispatchOutboxRepository,
             FollowerExecSessionRegistry sessionRegistry,
             FollowerExecWebSocketProperties properties,
-            Mt5AccountRuntimeStateStore runtimeStateStore
+            Mt5AccountRuntimeStateStore runtimeStateStore,
+            Mt5PositionLedgerStore positionLedgerStore,
+            CopyHotPathRedisStore hotPathRedisStore,
+            CopyHotPathPersistenceQueue hotPathPersistenceQueue
     ) {
         this.objectMapper = objectMapper;
         this.mt5AccountRepository = mt5AccountRepository;
@@ -62,6 +71,9 @@ public class FollowerExecWebSocketService {
         this.sessionRegistry = sessionRegistry;
         this.properties = properties;
         this.runtimeStateStore = runtimeStateStore;
+        this.positionLedgerStore = positionLedgerStore;
+        this.hotPathRedisStore = hotPathRedisStore;
+        this.hotPathPersistenceQueue = hotPathPersistenceQueue;
     }
 
     public void registerConnection(String sessionId, String traceId, WebSocketSession session) {
@@ -128,9 +140,33 @@ public class FollowerExecWebSocketService {
                 readDecimal(payload, "equity"),
                 false
         );
+        if (positionLedgerStore.hasPositionsSnapshot(payload)) {
+            positionLedgerStore.reconcile(
+                    followerAccount.getId(),
+                    followerAccount.getMt5Login(),
+                    followerAccount.getServerName(),
+                    followerAccount.getServerName() + ":" + followerAccount.getMt5Login(),
+                    positionLedgerStore.extractFromPayload(payload, helloAt),
+                    helloAt
+            );
+        }
 
-        List<FollowerDispatchOutboxEntity> pendingDispatches = followerDispatchOutboxRepository
-                .findByFollowerAccountIdAndStatusOrderByIdAsc(followerAccount.getId(), FollowerDispatchStatus.PENDING);
+        List<FollowerDispatchOutboxEntity> pendingDispatches;
+        try {
+            pendingDispatches = hotPathRedisStore.isRedisBackend()
+                    ? hotPathRedisStore.findPendingDispatchesByFollower(followerAccount.getId())
+                    : followerDispatchOutboxRepository.findByFollowerAccountIdAndStatusOrderByIdAsc(
+                            followerAccount.getId(),
+                            FollowerDispatchStatus.PENDING
+                    );
+        } catch (Exception ex) {
+            log.warn("Failed to load pending follower dispatches from redis hot-path, fallback to DB, followerAccountId={}",
+                    followerAccount.getId(), ex);
+            pendingDispatches = followerDispatchOutboxRepository.findByFollowerAccountIdAndStatusOrderByIdAsc(
+                    followerAccount.getId(),
+                    FollowerDispatchStatus.PENDING
+            );
+        }
         sendHelloAck(sessionId, traceId, followerAccount, pendingDispatches.size());
         for (FollowerDispatchOutboxEntity dispatch : pendingDispatches) {
             tryPushPendingDispatch(followerAccount.getId(), dispatch.getId());
@@ -152,6 +188,20 @@ public class FollowerExecWebSocketService {
                         readDecimal(payload, "equity"),
                         true
                 ));
+
+        if (positionLedgerStore.hasPositionsSnapshot(payload)) {
+            sessionRegistry.get(sessionId)
+                    .filter(context -> context.getFollowerAccountId() != null)
+                    .flatMap(context -> mt5AccountRepository.findById(context.getFollowerAccountId()))
+                    .ifPresent(followerAccount -> positionLedgerStore.reconcile(
+                            followerAccount.getId(),
+                            followerAccount.getMt5Login(),
+                            followerAccount.getServerName(),
+                            followerAccount.getServerName() + ":" + followerAccount.getMt5Login(),
+                            positionLedgerStore.extractFromPayload(payload, heartbeatAt),
+                            heartbeatAt
+                    ));
+        }
     }
 
     private void handleDispatchStatusUpdate(
@@ -170,13 +220,26 @@ public class FollowerExecWebSocketService {
             throw new IllegalArgumentException("dispatchId is required");
         }
 
-        FollowerDispatchOutboxEntity dispatch = followerDispatchOutboxRepository.findById(dispatchId)
-                .orElseThrow(() -> new IllegalArgumentException("Follower dispatch not found: " + dispatchId));
+        FollowerDispatchOutboxEntity dispatch = hotPathRedisStore.isRedisBackend()
+                ? hotPathRedisStore.findDispatchById(dispatchId)
+                    .orElseThrow(() -> new IllegalArgumentException("Follower dispatch not found: " + dispatchId))
+                : followerDispatchOutboxRepository.findById(dispatchId)
+                    .orElseThrow(() -> new IllegalArgumentException("Follower dispatch not found: " + dispatchId));
         if (!sessionContext.getFollowerAccountId().equals(dispatch.getFollowerAccountId())) {
             throw new IllegalArgumentException("Dispatch does not belong to the bound follower account");
         }
 
         applyDispatchStatus(dispatch, status, readText(payload, "statusMessage", "status_message"));
+        if (hotPathRedisStore.isRedisBackend()) {
+            try {
+                hotPathRedisStore.storeDispatch(dispatch);
+                hotPathPersistenceQueue.enqueueFollowerDispatch(dispatch);
+                sendStatusAckAfterCommit(sessionId, dispatch);
+                return;
+            } catch (Exception ex) {
+                log.warn("Failed to update follower dispatch in redis hot-path, fallback to DB, dispatchId={}", dispatchId, ex);
+            }
+        }
         FollowerDispatchOutboxEntity saved = followerDispatchOutboxRepository.save(dispatch);
         sendStatusAckAfterCommit(sessionId, saved);
     }
@@ -292,10 +355,19 @@ public class FollowerExecWebSocketService {
             return false;
         }
 
-        return followerDispatchOutboxRepository.findById(dispatchId)
-                .filter(dispatch -> dispatch.getStatus() == FollowerDispatchStatus.PENDING)
-                .map(dispatch -> {
-                    sendDispatch(sessionIdOptional.get(), session, dispatch);
+        Optional<FollowerDispatchOutboxEntity> dispatch;
+        try {
+            dispatch = hotPathRedisStore.isRedisBackend()
+                    ? hotPathRedisStore.findDispatchById(dispatchId)
+                    : followerDispatchOutboxRepository.findById(dispatchId);
+        } catch (Exception ex) {
+            log.warn("Failed to load follower dispatch from redis hot-path, fallback to DB, dispatchId={}", dispatchId, ex);
+            dispatch = followerDispatchOutboxRepository.findById(dispatchId);
+        }
+        return dispatch
+                .filter(item -> item.getStatus() == FollowerDispatchStatus.PENDING)
+                .map(item -> {
+                    sendDispatch(sessionIdOptional.get(), session, item);
                     return true;
                 })
                 .orElse(false);

@@ -38,18 +38,7 @@ function RelationActions({
         </span>
         <span>priority {relation.priority}</span>
         <div>
-          {currentUserOwnsFollower ? (
-            <button
-              className="button button--ghost"
-              disabled={unlinkPending}
-              onClick={() => onUnlink(relation.id)}
-              type="button"
-            >
-              {unlinkPending ? '解绑中...' : '解绑'}
-            </button>
-          ) : (
-            <span className="inline-hint">分享出去的关系由 follower 侧决定是否解绑</span>
-          )}
+          <span className="inline-hint">该关系不属于当前用户可编辑范围</span>
           <div className="inline-hint">
             {currentUserOwnsMaster ? (
               <Link className="text-link" params={{ accountId: String(masterAccount.id) }} to="/app/accounts/$accountId">
@@ -58,12 +47,6 @@ function RelationActions({
             ) : (
               <span>主账户来自分享绑定</span>
             )}
-            <br />
-            {currentUserOwnsFollower ? (
-              <Link className="text-link" params={{ accountId: String(followerAccount.id) }} to="/app/accounts/$accountId">
-                从账户详情
-              </Link>
-            ) : null}
           </div>
         </div>
       </div>
@@ -105,6 +88,15 @@ function RelationActions({
         <button className="button button--ghost" disabled={savePending} type="submit">
           保存
         </button>
+        {' '}
+        <button
+          className="button button--ghost"
+          disabled={unlinkPending}
+          onClick={() => onUnlink(relation.id)}
+          type="button"
+        >
+          {unlinkPending ? '解绑中...' : '解绑'}
+        </button>
         <div className="inline-hint">
           {currentUserOwnsMaster ? (
             <Link className="text-link" params={{ accountId: String(masterAccount.id) }} to="/app/accounts/$accountId">
@@ -114,11 +106,9 @@ function RelationActions({
             <span>主账户来自分享绑定</span>
           )}
           <br />
-          {currentUserOwnsFollower ? (
-            <Link className="text-link" params={{ accountId: String(followerAccount.id) }} to="/app/accounts/$accountId">
-              从账户详情
-            </Link>
-          ) : null}
+          <Link className="text-link" params={{ accountId: String(followerAccount.id) }} to="/app/accounts/$accountId">
+            从账户详情
+          </Link>
         </div>
       </div>
     </form>
@@ -208,17 +198,17 @@ export function RelationsPage() {
     <div className="page-stack">
       <PageHeader
         title="关系管理"
-        description="集中查看我名下的主从关系和分享绑定关系；共享关系由 follower 侧主动解绑。"
+        description="集中查看当前登录用户可见的主从关系。只要当前用户拥有 follower 侧，就应该同时看到保存和解绑两个操作。"
       />
 
       <div className="metrics-grid">
         <MetricCard label="总关系数" value={totalCount} />
         <MetricCard label="我作为 Master" value={masterCount} tone="good" />
         <MetricCard label="我作为 Follower" value={followerCount} tone="neutral" />
-        <MetricCard label="待启用 / 暂停" value={pausedCount} tone="warn" />
+        <MetricCard label="暂停关系" value={pausedCount} tone="warn" />
       </div>
 
-      <Surface title="筛选" description="按角色范围、状态和关键词过滤当前可见关系。">
+      <Surface title="筛选" description="按范围、状态和关键字过滤当前可见关系。">
         <div className="toolbar">
           <label className="field">
             <span>搜索</span>
@@ -248,9 +238,9 @@ export function RelationsPage() {
         </div>
       </Surface>
 
-      <Surface title="关系列表" description="同用户关系可直接调整；分享绑定关系由 follower 主动解绑。">
+      <Surface title="关系列表" description="拥有 follower 侧权限的关系可以直接保存或解绑。">
         {filteredRelations.length === 0 ? (
-          <EmptyState title="没有匹配的关系" message="可以先通过账户详情页创建关系，或者用 share_id + share_code 绑定主账户。" />
+          <EmptyState title="没有匹配的关系" message="可以先在账户详情页创建关系，或通过分享绑定主账户。" />
         ) : (
           <div className="stack-list">
             {filteredRelations.map((item) => (
@@ -260,7 +250,7 @@ export function RelationsPage() {
                     #{item.relation.id} <StatusPill value={item.relation.status} />
                   </strong>
                   <p>
-                    {item.relation.copyMode} · priority {item.relation.priority} · 更新于 {formatDateTime(item.relation.updatedAt)}
+                    {item.relation.copyMode} / priority {item.relation.priority} / 更新于 {formatDateTime(item.relation.updatedAt)}
                   </p>
                 </div>
                 <div className="badge">

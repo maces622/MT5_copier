@@ -139,6 +139,12 @@ export function bindAccount(payload: BindAccountPayload) {
   })
 }
 
+export function deleteAccount(accountId: number) {
+  return apiRequest<void>(`/api/me/accounts/${accountId}`, {
+    method: 'DELETE',
+  })
+}
+
 export function getAccount(accountId: string) {
   return apiRequest<Mt5AccountResponse>(`/api/accounts/${accountId}`)
 }

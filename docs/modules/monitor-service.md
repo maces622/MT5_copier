@@ -1,128 +1,139 @@
 # Monitor Service
 
-## Goal
+## 1. 当前职责
 
-This module turns MT5 signal activity, runtime connection state, and dispatch execution state into queryable monitoring views.
+`monitor` 负责把系统中的信号、运行状态、会话和执行结果聚合成可查询视图。
 
-Current code scope:
+当前覆盖：
 
-1. Persist accepted MT5 signal audit records into MySQL
-2. Maintain MT5 account runtime state in a Redis-first store
-3. Expose aggregated account monitoring APIs
-4. Expose MT5 websocket session views
-5. Expose follower websocket session views through the follower-exec module
+1. signal audit
+2. runtime-state
+3. master websocket session
+4. follower websocket session
+5. account overview
+6. command / dispatch 查询
+7. order / position trace
 
-## Current Runtime-State Design
+## 2. 主要输入与输出
 
-### Source of truth
+### 输入
 
-1. Signal audit remains in MySQL
-2. Runtime-state hot data is Redis-first
-3. MySQL keeps throttled runtime-state snapshots and disconnect-time forced persistence
-4. Redis runtime-state is never treated as business truth for core config or execution history
+1. `signal-ingest` 写入的 signal audit
+2. master runtime-state
+3. follower runtime-state
+4. master session registry
+5. follower session registry
+6. `execution_commands`
+7. `follower_dispatch_outbox`
 
-### Runtime-state keys
+### 输出
+
+1. `/api/monitor/dashboard`
+2. `/api/monitor/accounts/{accountId}/detail`
+3. `/api/monitor/accounts/{accountId}/commands`
+4. `/api/monitor/accounts/{accountId}/dispatches`
+5. `/api/monitor/traces/order`
+6. `/api/monitor/traces/position`
+
+## 3. 当前 runtime-state 设计
+
+### 数据主权
+
+1. Redis 持有最新 runtime-state
+2. MySQL 保存节流同步后的快照
+3. 断线事件会强制落盘
+
+### 当前 key
 
 1. `copy:runtime:state:{server}:{login}`
 2. `copy:runtime:account:{accountId}`
 3. `copy:runtime:index`
 4. `copy:runtime:db-sync:{server}:{login}`
 
-### Write path
+### 当前字段
 
-1. MT5 master `HELLO / HEARTBEAT / DEAL / ORDER` updates runtime-state through a unified store
-2. Follower `HELLO / HEARTBEAT` updates runtime-state through the same store
-3. Writes go to Redis first
-4. Database persistence is throttled by `copier.monitor.runtime-state.database-sync-interval`
-5. Disconnect events force a database snapshot write immediately
+runtime-state 当前至少包含：
 
-### Heartbeat to Redis to DB flow
+1. connectionStatus
+2. lastHelloAt
+3. lastHeartbeatAt
+4. lastSignalAt
+5. lastSignalType
+6. lastEventId
+7. balance
+8. equity
 
-The current heartbeat path is intentionally designed as `Redis-first, DB-throttled`:
+## 4. 账户详情页的数据来源
 
-1. A master or follower websocket message arrives
-2. The runtime-state store normalizes the latest connection status, timestamps, balance, and equity
-3. Redis is updated first:
-   `copy:runtime:state:{server}:{login}`
-   `copy:runtime:account:{accountId}`
-   `copy:runtime:index`
-4. The store checks the last database sync marker:
-   `copy:runtime:db-sync:{server}:{login}`
-5. If the throttling window has not expired, the write stops at Redis and does not hit JPA
-6. If the throttling window has expired, the latest runtime-state snapshot is also persisted to MySQL
-7. If the websocket disconnects, the runtime-state is marked `DISCONNECTED` and the snapshot is forced to MySQL immediately
+### `overview`
 
-This is the key reason heartbeat traffic no longer turns into a full-rate JPA write path.
+来自：
 
-### Why this matters
+1. MT5 账户基础信息
+2. runtime-state
+3. dispatch 计数
 
-1. Monitoring APIs can read fresh runtime-state without waiting for database flushes
-2. Ratio-copy reads follower funds from Redis-first runtime-state instead of querying the runtime-state table on every trade
-3. Database snapshots still exist for restart visibility, audit support, and controlled recovery
-4. After Redis restore, stale runtime-state still cannot be used for ratio-copy unless it passes the freshness gate
+### `runtimeState`
 
-### Read path
+来自统一 runtime-state store。
 
-1. `GET /api/monitor/runtime-states` reads the unified runtime-state store
-2. `GET /api/monitor/accounts/overview` merges account config, runtime-state, and dispatch counters
-3. `GET /api/monitor/ws-sessions` merges websocket session registry with runtime-state
-4. Copy engine balance/equity scaling also reads follower funds from the runtime-state store
+注意：
 
-### Freshness gate for ratio-copy
+1. follower 账户现在也会返回 `balance` 和 `equity`
+2. follower 的 `lastSignalType` 可能为 `n/a`，这是当前设计内的正常结果
 
-1. `BALANCE_RATIO` and `EQUITY_RATIO` no longer silently fall back to `1.0` when follower funds are missing
-2. Copy engine checks runtime-state freshness before using follower balance/equity
-3. Freshness is controlled by `copier.monitor.runtime-state.funds-stale-after`
-4. The gate can be disabled by `copier.monitor.runtime-state.require-fresh-funds-for-ratio=false`, but the default is `true`
-5. After Redis restore, stale runtime-state must not be trusted for real sizing until fresh `HELLO` or `HEARTBEAT` arrives
+### `wsSessions`
 
-## Available APIs
+只表示 master `/ws/trade` 会话。
 
-1. `GET /api/monitor/runtime-states`
-2. `GET /api/monitor/accounts/overview`
-3. `GET /api/monitor/ws-sessions`
-4. `GET /api/monitor/accounts/{accountId}/signals`
-5. `GET /api/monitor/signals?accountKey=...`
-6. `GET /api/monitor/dashboard`
-7. `GET /api/monitor/accounts/{accountId}/detail`
-8. `GET /api/monitor/accounts/{accountId}/commands`
-9. `GET /api/monitor/accounts/{accountId}/dispatches`
+### `followerExecSessions`
 
-The first five APIs are existing monitor/runtime views. The last four are console-oriented read models built for the upcoming account/monitor UI.
+表示 follower `/ws/follower-exec` 会话。
 
-## Config Keys
+当前更重要的字段是：
 
-1. `copier.monitor.heartbeat-stale-after`
-2. `copier.monitor.runtime-state.backend`
-3. `copier.monitor.runtime-state.key-prefix`
-4. `copier.monitor.runtime-state.database-sync-interval`
-5. `copier.monitor.runtime-state.funds-stale-after`
-6. `copier.monitor.runtime-state.require-fresh-funds-for-ratio`
-7. `copier.monitor.runtime-state.warmup-on-startup`
-8. `copier.monitor.session-registry.backend`
-9. `copier.monitor.session-registry.key-prefix`
-10. `copier.monitor.session-registry.ttl`
+1. `lastHeartbeatAt`
+2. `lastDispatchSentAt`
+3. `lastDispatchId`
 
-## Local Recommendation
+## 5. 当前监控控制台行为
 
-For local single-node integration:
+1. 监控列表页和详情页当前会定时轮询刷新
+2. 前端看到的是聚合 API 的读模型，不是额外的 websocket 推送
+3. command、dispatch、runtime-state、session 会随着轮询刷新
 
-1. `copier.monitor.runtime-state.backend=redis`
-2. `copier.monitor.runtime-state.funds-stale-after=PT30S`
-3. `copier.monitor.runtime-state.require-fresh-funds-for-ratio=true`
-4. `copier.monitor.session-registry.backend=redis` or `memory`
-5. `copier.mt5.follower-exec.realtime-dispatch.backend=local`
+## 6. 持仓台账
 
-## Backup / Recovery Notes
+除了 runtime-state 之外，监控层还维护 open-position ledger：
 
-1. MariaDB is still the source of truth for config, command history, outbox, and audit
-2. Redis runtime-state is recoverable hot state, not authoritative history
-3. After Redis restore, clear `copy:ws:*` and `copy:signal:dedup:*`
-4. If restored runtime-state is older than `funds-stale-after`, ratio-copy should stay blocked until fresh heartbeat arrives
-5. Full backup/recovery workflow is documented in [../operations/redis-backup-recovery.md](../operations/redis-backup-recovery.md)
+1. Redis key：
+   `copy:runtime:positions:{accountKey}`
+2. Redis index：
+   `copy:runtime:positions:index`
+3. MySQL durable ledger：
+   open-position 持久化表
 
-## Current Limits
+held-position inventory 会来自 master 与 follower 的 `HELLO / HEARTBEAT`。
 
-1. Runtime-state database sync is throttled inline, not handled by a dedicated async flush worker
-2. Signal audit is still DB-first and is not buffered through Redis
-3. Follower position inventory reconciliation and broker-side account reconciliation are not implemented yet
+## 7. 与其他模块的交互
+
+1. `signal-ingest`
+   提供 signal audit 与 master runtime-state
+2. `follower-exec`
+   提供 follower runtime-state 与 follower session
+3. `copy-engine`
+   提供 command / dispatch / trace 查询数据
+4. `web-console`
+   消费监控聚合接口
+
+## 8. 当前边界
+
+1. runtime-state 的数据库同步仍然是节流式 inline persistence，不是独立 flush worker
+2. 没有完整告警编排和通知中心
+3. 还没有完整 broker 级对账系统
+
+## 9. 相关文档
+
+1. [总体架构](../architecture/overall-architecture.md)
+2. [模块交互与端到端数据链路](../architecture/system-modules-and-dataflows.md)
+3. [Redis 备份与恢复](../operations/redis-backup-recovery.md)

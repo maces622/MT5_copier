@@ -161,10 +161,12 @@ export interface Mt5AccountMonitorOverviewResponse {
 }
 
 export interface Mt5RuntimeStateResponse {
+  id: number | null
   accountId: number | null
   accountKey: string | null
-  serverName: string
-  mt5Login: number
+  server: string | null
+  login: number | null
+  lastSessionId: string | null
   connectionStatus: string
   lastHelloAt: string | null
   lastHeartbeatAt: string | null
@@ -200,9 +202,11 @@ export interface FollowerExecSessionResponse {
   login: number | null
   server: string | null
   accountKey: string | null
+  connectionStatus: string
   lastHelloAt: string | null
   lastHeartbeatAt: string | null
-  lastAckAt: string | null
+  lastDispatchSentAt: string | null
+  lastDispatchId: number | null
 }
 
 export interface MonitorAccountDetailResponse {

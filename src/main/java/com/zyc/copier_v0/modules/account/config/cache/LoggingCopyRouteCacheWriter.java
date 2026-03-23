@@ -43,4 +43,20 @@ public class LoggingCopyRouteCacheWriter implements CopyRouteCacheWriter {
         log.info("Refresh account binding cache via log backend, accountId={}, accountKey={}:{}",
                 account.getId(), account.getServerName(), account.getMt5Login());
     }
+
+    @Override
+    public void evictFollowerRisk(Long followerAccountId) {
+        if (followerAccountId == null) {
+            return;
+        }
+        log.info("Evict follower risk cache via log backend, followerAccountId={}", followerAccountId);
+    }
+
+    @Override
+    public void evictAccountBinding(String serverName, Long mt5Login) {
+        if (serverName == null || mt5Login == null) {
+            return;
+        }
+        log.info("Evict account binding cache via log backend, accountKey={}:{}", serverName, mt5Login);
+    }
 }

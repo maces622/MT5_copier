@@ -30,6 +30,10 @@
 6. `follower_dispatch_outbox`
 7. 信号审计流水
 
+说明：
+
+1. `REDIS_QUEUE` 只改变热路径写入顺序，不改变这些数据最终以 MariaDB 为准的原则。
+
 ### 2. 可重建缓存
 
 这些 Redis 数据可以丢，可以重建：
@@ -37,12 +41,13 @@
 1. `copy:route:*`
 2. `copy:account:risk:*`
 3. `copy:account:binding:*`
+4. `copy:hot:*`
 
 恢复时最稳的做法不是“信任旧缓存”，而是：
 
 1. 先恢复 MariaDB
 2. 再启动应用
-3. 由 warmup 或配置重写自动重建 Redis
+3. 由 warmup、持仓台账回补和配置重写自动重建 Redis
 
 ### 3. 运行态 / 易失态
 
@@ -165,8 +170,10 @@
 应用启动后会：
 
 1. 预热 route/risk/account-binding/runtime-state
-2. 重新建立 session registry
-3. 等待 EA 重连和 heartbeat
+2. 从 `mt5_open_positions` 回补持仓台账热状态
+3. 把 `copy:hot:seq:*` 对齐到数据库当前最大 signal / command / dispatch ID
+4. 重新建立 session registry
+5. 等待 EA 重连和 heartbeat
 
 ### 6. 等待新鲜 heartbeat 后再恢复比例跟单
 
@@ -216,3 +223,23 @@ powershell -ExecutionPolicy Bypass -File .\bootstrap\redis-recovery-cleanup.ps1 
 1. MariaDB 保持业务真源
 2. Redis 保持热状态加速层
 3. 恢复后宁可降级、宁可等待新鲜 heartbeat，也不要把旧 Redis 状态直接当真
+
+## Additional Hot Keys In The Current Design
+
+The latest Redis-first copy path adds these hot keys:
+
+1. `copy:hot:command:*`
+2. `copy:hot:dispatch:*`
+3. `copy:hot:commands:*`
+4. `copy:hot:dispatches:*`
+5. `copy:hot:persistence:queue`
+6. `copy:hot:persistence:dead-letter`
+7. `copy:hot:seq:*`
+8. `copy:runtime:positions:*`
+
+Backup / recovery interpretation:
+
+1. `copy:hot:*` accelerates command/dispatch lookup and async persistence, but MySQL is still the durable truth.
+2. `copy:runtime:positions:*` is recoverable hot state; the durable source is `mt5_open_positions`.
+3. After Redis restore, fresh MT5 held-position snapshots can overwrite stale ledger state and trigger async persistence again if the snapshot changed.
+4. If restored `copy:hot:seq:*` is missing or lower than DB max IDs, startup warmup will only move it forward and never roll IDs back.

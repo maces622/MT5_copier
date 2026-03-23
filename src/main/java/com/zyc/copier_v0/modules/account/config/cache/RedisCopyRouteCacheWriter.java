@@ -85,6 +85,32 @@ public class RedisCopyRouteCacheWriter implements CopyRouteCacheWriter {
         }
     }
 
+    @Override
+    public void evictFollowerRisk(Long followerAccountId) {
+        if (followerAccountId == null) {
+            return;
+        }
+        try {
+            stringRedisTemplate.delete(keyResolver.followerRiskKey(followerAccountId));
+            log.info("Evict follower risk cache in redis, followerAccountId={}", followerAccountId);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to evict follower risk cache in redis, followerAccountId={}", followerAccountId, ex);
+        }
+    }
+
+    @Override
+    public void evictAccountBinding(String serverName, Long mt5Login) {
+        if (serverName == null || mt5Login == null) {
+            return;
+        }
+        try {
+            stringRedisTemplate.delete(keyResolver.accountBindingKey(serverName, mt5Login));
+            log.info("Evict account binding cache in redis, accountKey={}:{}", serverName, mt5Login);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to evict account binding cache in redis, accountKey={}:{}", serverName, mt5Login, ex);
+        }
+    }
+
     private String writeJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);

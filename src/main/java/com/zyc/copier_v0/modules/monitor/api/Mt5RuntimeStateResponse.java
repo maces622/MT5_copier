@@ -1,6 +1,7 @@
 package com.zyc.copier_v0.modules.monitor.api;
 
 import com.zyc.copier_v0.modules.monitor.domain.Mt5ConnectionStatus;
+import java.math.BigDecimal;
 import java.time.Instant;
 import lombok.Data;
 
@@ -19,5 +20,7 @@ public class Mt5RuntimeStateResponse {
     private Instant lastSignalAt;
     private String lastSignalType;
     private String lastEventId;
+    private BigDecimal balance;
+    private BigDecimal equity;
     private Instant updatedAt;
 }

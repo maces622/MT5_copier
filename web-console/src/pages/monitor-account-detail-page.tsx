@@ -5,20 +5,30 @@ import { getMonitorAccountDetail, getMonitorCommands, getMonitorDispatches } fro
 import { formatDateTime } from '../lib/format'
 import { DataTable, EmptyState, ErrorState, KeyValueGrid, LoadingState, PageHeader, StatusPill, Surface } from '../components/common'
 
+const MONITOR_REFRESH_MS = 3000
+const EMPTY_VALUE = '--'
+
 export function MonitorAccountDetailPage() {
   const { accountId } = useParams({ from: '/app/monitor/accounts/$accountId' })
   const [eventKeyword, setEventKeyword] = useState('')
+
   const detailQuery = useQuery({
     queryKey: ['monitor', 'detail', accountId],
     queryFn: () => getMonitorAccountDetail(accountId),
+    refetchInterval: MONITOR_REFRESH_MS,
+    refetchIntervalInBackground: true,
   })
   const commandsQuery = useQuery({
     queryKey: ['monitor', 'commands', accountId],
     queryFn: () => getMonitorCommands(accountId),
+    refetchInterval: MONITOR_REFRESH_MS,
+    refetchIntervalInBackground: true,
   })
   const dispatchesQuery = useQuery({
     queryKey: ['monitor', 'dispatches', accountId],
     queryFn: () => getMonitorDispatches(accountId),
+    refetchInterval: MONITOR_REFRESH_MS,
+    refetchIntervalInBackground: true,
   })
 
   if (detailQuery.isPending || commandsQuery.isPending || dispatchesQuery.isPending) {
@@ -27,22 +37,23 @@ export function MonitorAccountDetailPage() {
 
   if (detailQuery.error || commandsQuery.error || dispatchesQuery.error) {
     const error = detailQuery.error || commandsQuery.error || dispatchesQuery.error
-    return <ErrorState message={error instanceof Error ? error.message : '请求失败'} />
+    return <ErrorState message={error instanceof Error ? error.message : 'Request failed'} />
   }
 
   const detail = detailQuery.data!
+  const normalizedKeyword = eventKeyword.trim().toLowerCase()
   const commands = commandsQuery.data!.filter((command) =>
-    !eventKeyword.trim() || command.masterEventId.toLowerCase().includes(eventKeyword.trim().toLowerCase()),
+    !normalizedKeyword || command.masterEventId.toLowerCase().includes(normalizedKeyword),
   )
   const dispatches = dispatchesQuery.data!.filter((dispatch) =>
-    !eventKeyword.trim() || dispatch.masterEventId.toLowerCase().includes(eventKeyword.trim().toLowerCase()),
+    !normalizedKeyword || dispatch.masterEventId.toLowerCase().includes(normalizedKeyword),
   )
 
   return (
     <div className="page-stack">
       <PageHeader
-        title={`监控详情 #${accountId}`}
-        description="汇总 runtime-state、websocket session、command 和 dispatch。"
+        title={`Monitor Detail #${accountId}`}
+        description="Runtime state, websocket sessions, execution commands, and follower dispatches for this account."
       />
 
       <div className="two-column">
@@ -59,7 +70,10 @@ export function MonitorAccountDetailPage() {
               ]}
             />
           ) : (
-            <EmptyState title="没有 overview" message="这个账户当前还没有聚合监控视图。" />
+            <EmptyState
+              title="No overview"
+              message="This account does not have aggregated monitor data yet."
+            />
           )}
         </Surface>
 
@@ -76,12 +90,18 @@ export function MonitorAccountDetailPage() {
               ]}
             />
           ) : (
-            <EmptyState title="没有 runtime-state" message="这个账户暂时还没有 heartbeat 或运行态快照。" />
+            <EmptyState
+              title="No runtime state"
+              message="This account has not reported a hello, heartbeat, or runtime snapshot yet."
+            />
           )}
         </Surface>
       </div>
 
-      <Surface title="Event Filter" description="按 masterEventId 过滤当前账户下的命令和 dispatch。">
+      <Surface
+        title="Event Filter"
+        description="Filter commands and dispatches for this account by masterEventId."
+      >
         <div className="toolbar">
           <label className="field">
             <span>masterEventId</span>
@@ -96,27 +116,33 @@ export function MonitorAccountDetailPage() {
 
       <Surface title="WebSocket Sessions">
         {detail.wsSessions.length === 0 && detail.followerExecSessions.length === 0 ? (
-          <EmptyState title="没有会话" message="账户当前没有活动 websocket 记录。" />
+          <EmptyState
+            title="No sessions"
+            message="This account currently has no active websocket session records."
+          />
         ) : (
           <div className="two-column">
             <DataTable
               headers={['MT5 Session', 'Server', 'Login', 'Status', 'Last Heartbeat']}
               rows={detail.wsSessions.map((session) => [
                 session.sessionId,
-                session.server || '—',
-                session.login ?? '—',
+                session.server || EMPTY_VALUE,
+                session.login ?? EMPTY_VALUE,
                 <StatusPill value={session.connectionStatus} />,
                 formatDateTime(session.lastHeartbeatAt),
               ])}
             />
             <DataTable
-              headers={['Follower Session', 'Account', 'Server', 'Login', 'Last Ack']}
+              headers={['Follower Session', 'Status', 'Server', 'Login', 'Last Heartbeat', 'Last Dispatch']}
               rows={detail.followerExecSessions.map((session) => [
                 session.sessionId,
-                session.followerAccountId ?? '—',
-                session.server || '—',
-                session.login ?? '—',
-                formatDateTime(session.lastAckAt),
+                <StatusPill value={session.connectionStatus} />,
+                session.server || EMPTY_VALUE,
+                session.login ?? EMPTY_VALUE,
+                formatDateTime(session.lastHeartbeatAt),
+                session.lastDispatchId
+                  ? `${session.lastDispatchId} @ ${formatDateTime(session.lastDispatchSentAt)}`
+                  : EMPTY_VALUE,
               ])}
             />
           </div>
@@ -125,7 +151,10 @@ export function MonitorAccountDetailPage() {
 
       <Surface title="Recent Commands">
         {commands.length === 0 ? (
-          <EmptyState title="没有 command" message="这个账户目前还没有复制引擎命令记录。" />
+          <EmptyState
+            title="No commands"
+            message="This account does not have execution command records yet."
+          />
         ) : (
           <DataTable
             headers={['ID', 'Event', 'Type', 'Status', 'Volume', 'Reason', 'Created']}
@@ -134,8 +163,8 @@ export function MonitorAccountDetailPage() {
               command.masterEventId,
               command.commandType,
               <StatusPill value={command.status} />,
-              command.requestedVolume ?? '—',
-              command.rejectReason || '—',
+              command.requestedVolume ?? EMPTY_VALUE,
+              command.rejectReason || EMPTY_VALUE,
               formatDateTime(command.createdAt),
             ])}
           />
@@ -144,7 +173,10 @@ export function MonitorAccountDetailPage() {
 
       <Surface title="Recent Dispatches">
         {dispatches.length === 0 ? (
-          <EmptyState title="没有 dispatch" message="这个账户目前还没有 follower dispatch 记录。" />
+          <EmptyState
+            title="No dispatches"
+            message="This account does not have follower dispatch records yet."
+          />
         ) : (
           <DataTable
             headers={['ID', 'Execution', 'Status', 'Message', 'Acked', 'Updated']}
@@ -152,7 +184,7 @@ export function MonitorAccountDetailPage() {
               dispatch.id,
               dispatch.executionCommandId,
               <StatusPill value={dispatch.status} />,
-              dispatch.statusMessage || '—',
+              dispatch.statusMessage || EMPTY_VALUE,
               formatDateTime(dispatch.ackedAt),
               formatDateTime(dispatch.updatedAt),
             ])}

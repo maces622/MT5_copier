@@ -17,6 +17,9 @@ import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionCommandType;
 import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionCommandStatus;
 import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionRejectReason;
 import com.zyc.copier_v0.modules.copy.engine.domain.FollowerDispatchStatus;
+import com.zyc.copier_v0.modules.copy.engine.persistence.CopyHotPathIdAllocator;
+import com.zyc.copier_v0.modules.copy.engine.persistence.CopyHotPathPersistenceQueue;
+import com.zyc.copier_v0.modules.copy.engine.persistence.CopyHotPathRedisStore;
 import com.zyc.copier_v0.modules.copy.engine.entity.ExecutionCommandEntity;
 import com.zyc.copier_v0.modules.copy.engine.entity.FollowerDispatchOutboxEntity;
 import com.zyc.copier_v0.modules.copy.engine.event.FollowerDispatchCreatedEvent;
@@ -58,6 +61,9 @@ public class CopyEngineService {
     private final FollowerDispatchOutboxRepository followerDispatchOutboxRepository;
     private final DispatchSlippagePolicyResolver dispatchSlippagePolicyResolver;
     private final Mt5AccountRuntimeStateStore runtimeStateStore;
+    private final CopyHotPathIdAllocator hotPathIdAllocator;
+    private final CopyHotPathRedisStore hotPathRedisStore;
+    private final CopyHotPathPersistenceQueue hotPathPersistenceQueue;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher applicationEventPublisher;
 
@@ -67,6 +73,9 @@ public class CopyEngineService {
             FollowerDispatchOutboxRepository followerDispatchOutboxRepository,
             DispatchSlippagePolicyResolver dispatchSlippagePolicyResolver,
             Mt5AccountRuntimeStateStore runtimeStateStore,
+            CopyHotPathIdAllocator hotPathIdAllocator,
+            CopyHotPathRedisStore hotPathRedisStore,
+            CopyHotPathPersistenceQueue hotPathPersistenceQueue,
             ObjectMapper objectMapper,
             ApplicationEventPublisher applicationEventPublisher
     ) {
@@ -75,6 +84,9 @@ public class CopyEngineService {
         this.followerDispatchOutboxRepository = followerDispatchOutboxRepository;
         this.dispatchSlippagePolicyResolver = dispatchSlippagePolicyResolver;
         this.runtimeStateStore = runtimeStateStore;
+        this.hotPathIdAllocator = hotPathIdAllocator;
+        this.hotPathRedisStore = hotPathRedisStore;
+        this.hotPathPersistenceQueue = hotPathPersistenceQueue;
         this.objectMapper = objectMapper;
         this.applicationEventPublisher = applicationEventPublisher;
     }
@@ -107,16 +119,7 @@ public class CopyEngineService {
         }
 
         for (FollowerRouteCacheItem follower : routeSnapshot.getFollowers()) {
-            if (executionCommandRepository.existsByMasterEventIdAndFollowerAccountId(
-                    signal.getEventId(),
-                    follower.getFollowerAccountId()
-            )) {
-                continue;
-            }
-            ExecutionCommandEntity command = executionCommandRepository.save(
-                    buildCommand(masterAccount.getAccountId(), follower, signal)
-            );
-            createDispatchOutboxIfNeeded(command, signal, follower);
+            processFollowerSignal(masterAccount.getAccountId(), follower, signal);
         }
     }
 
@@ -125,6 +128,15 @@ public class CopyEngineService {
         if (!StringUtils.hasText(masterEventId)) {
             return Collections.emptyList();
         }
+        if (hotPathRedisStore.isRedisBackend()) {
+            List<ExecutionCommandEntity> cached = hotPathRedisStore.findCommandsByMasterEventId(masterEventId);
+            if (!cached.isEmpty()) {
+                return cached.stream()
+                        .sorted((left, right) -> Long.compare(left.getId(), right.getId()))
+                        .map(this::toResponse)
+                        .toList();
+            }
+        }
         return executionCommandRepository.findByMasterEventIdOrderByIdAsc(masterEventId).stream()
                 .map(this::toResponse)
                 .toList();
@@ -132,6 +144,15 @@ public class CopyEngineService {
 
     @Transactional(readOnly = true)
     public List<ExecutionCommandResponse> findByFollowerAccountId(Long followerAccountId) {
+        if (hotPathRedisStore.isRedisBackend()) {
+            List<ExecutionCommandEntity> cached = hotPathRedisStore.findCommandsByFollower(followerAccountId);
+            if (!cached.isEmpty()) {
+                return cached.stream()
+                        .sorted((left, right) -> Long.compare(right.getId(), left.getId()))
+                        .map(this::toResponse)
+                        .toList();
+            }
+        }
         return executionCommandRepository.findByFollowerAccountIdOrderByIdDesc(followerAccountId).stream()
                 .map(this::toResponse)
                 .toList();
@@ -139,6 +160,18 @@ public class CopyEngineService {
 
     @Transactional(readOnly = true)
     public List<ExecutionCommandResponse> findByAccountId(Long accountId) {
+        if (hotPathRedisStore.isRedisBackend()) {
+            Map<Long, ExecutionCommandEntity> commands = hotPathRedisStore.findCommandsByMasterAccount(accountId).stream()
+                    .collect(Collectors.toMap(ExecutionCommandEntity::getId, command -> command, (left, right) -> left));
+            hotPathRedisStore.findCommandsByFollower(accountId)
+                    .forEach(command -> commands.putIfAbsent(command.getId(), command));
+            if (!commands.isEmpty()) {
+                return commands.values().stream()
+                        .sorted((left, right) -> Long.compare(right.getId(), left.getId()))
+                        .map(this::toResponse)
+                        .toList();
+            }
+        }
         Map<Long, ExecutionCommandEntity> commands = executionCommandRepository.findByMasterAccountIdOrderByIdDesc(accountId).stream()
                 .collect(Collectors.toMap(ExecutionCommandEntity::getId, command -> command, (left, right) -> left));
         executionCommandRepository.findByFollowerAccountIdOrderByIdDesc(accountId)
@@ -154,6 +187,14 @@ public class CopyEngineService {
         if (masterAccountId == null || masterOrderId == null) {
             return emptyTrace(masterAccountId, masterOrderId, null);
         }
+        if (hotPathRedisStore.isRedisBackend()) {
+            List<ExecutionCommandEntity> cached = hotPathRedisStore.findCommandsByMasterOrder(masterAccountId, masterOrderId);
+            if (!cached.isEmpty()) {
+                return buildTrace(masterAccountId, masterOrderId, null, cached.stream()
+                        .sorted((left, right) -> Long.compare(left.getId(), right.getId()))
+                        .toList());
+            }
+        }
         List<ExecutionCommandEntity> commands = executionCommandRepository
                 .findByMasterAccountIdAndMasterOrderIdOrderByIdAsc(masterAccountId, masterOrderId);
         return buildTrace(masterAccountId, masterOrderId, null, commands);
@@ -163,6 +204,14 @@ public class CopyEngineService {
     public ExecutionTraceResponse findPositionTrace(Long masterAccountId, Long masterPositionId) {
         if (masterAccountId == null || masterPositionId == null) {
             return emptyTrace(masterAccountId, null, masterPositionId);
+        }
+        if (hotPathRedisStore.isRedisBackend()) {
+            List<ExecutionCommandEntity> cached = hotPathRedisStore.findCommandsByMasterPosition(masterAccountId, masterPositionId);
+            if (!cached.isEmpty()) {
+                return buildTrace(masterAccountId, null, masterPositionId, cached.stream()
+                        .sorted((left, right) -> Long.compare(left.getId(), right.getId()))
+                        .toList());
+            }
         }
         List<ExecutionCommandEntity> commands = executionCommandRepository
                 .findByMasterAccountIdAndMasterPositionIdOrderByIdAsc(masterAccountId, masterPositionId);
@@ -174,6 +223,15 @@ public class CopyEngineService {
             Long followerAccountId,
             FollowerDispatchStatus status
     ) {
+        if (hotPathRedisStore.isRedisBackend()) {
+            List<FollowerDispatchOutboxEntity> cached = hotPathRedisStore.findDispatchesByFollower(followerAccountId, status);
+            if (!cached.isEmpty()) {
+                return cached.stream()
+                        .sorted((left, right) -> Long.compare(right.getId(), left.getId()))
+                        .map(this::toDispatchResponse)
+                        .toList();
+            }
+        }
         List<FollowerDispatchOutboxEntity> dispatches = status == null
                 ? followerDispatchOutboxRepository.findByFollowerAccountIdOrderByIdDesc(followerAccountId)
                 : followerDispatchOutboxRepository.findByFollowerAccountIdAndStatusOrderByIdAsc(followerAccountId, status);
@@ -187,6 +245,15 @@ public class CopyEngineService {
         if (!StringUtils.hasText(masterEventId)) {
             return Collections.emptyList();
         }
+        if (hotPathRedisStore.isRedisBackend()) {
+            List<FollowerDispatchOutboxEntity> cached = hotPathRedisStore.findDispatchesByMasterEventId(masterEventId);
+            if (!cached.isEmpty()) {
+                return cached.stream()
+                        .sorted((left, right) -> Long.compare(left.getId(), right.getId()))
+                        .map(this::toDispatchResponse)
+                        .toList();
+            }
+        }
         return followerDispatchOutboxRepository.findByMasterEventIdOrderByIdAsc(masterEventId).stream()
                 .map(this::toDispatchResponse)
                 .toList();
@@ -194,6 +261,21 @@ public class CopyEngineService {
 
     @Transactional(readOnly = true)
     public List<FollowerDispatchOutboxResponse> findDispatchesByAccountId(Long accountId) {
+        if (hotPathRedisStore.isRedisBackend()) {
+            Map<Long, FollowerDispatchOutboxEntity> dispatches = hotPathRedisStore.findDispatchesByFollower(accountId, null).stream()
+                    .collect(Collectors.toMap(FollowerDispatchOutboxEntity::getId, dispatch -> dispatch, (left, right) -> left));
+            List<Long> relatedCommandIds = hotPathRedisStore.findCommandsByMasterAccount(accountId).stream()
+                    .map(ExecutionCommandEntity::getId)
+                    .toList();
+            hotPathRedisStore.findDispatchesByCommandIds(relatedCommandIds)
+                    .forEach(dispatch -> dispatches.putIfAbsent(dispatch.getId(), dispatch));
+            if (!dispatches.isEmpty()) {
+                return dispatches.values().stream()
+                        .sorted((left, right) -> Long.compare(right.getId(), left.getId()))
+                        .map(this::toDispatchResponse)
+                        .toList();
+            }
+        }
         Map<Long, FollowerDispatchOutboxEntity> dispatches = followerDispatchOutboxRepository.findByFollowerAccountIdOrderByIdDesc(accountId).stream()
                 .collect(Collectors.toMap(FollowerDispatchOutboxEntity::getId, dispatch -> dispatch, (left, right) -> left));
 
@@ -217,24 +299,65 @@ public class CopyEngineService {
             FollowerDispatchStatus status,
             String statusMessage
     ) {
+        if (hotPathRedisStore.isRedisBackend()) {
+            FollowerDispatchOutboxEntity dispatch = hotPathRedisStore.findDispatchById(dispatchId)
+                    .orElseThrow(() -> new EntityNotFoundException("Follower dispatch not found: " + dispatchId));
+            applyDispatchStatus(dispatch, status, statusMessage);
+            hotPathRedisStore.storeDispatch(dispatch);
+            hotPathPersistenceQueue.enqueueFollowerDispatch(dispatch);
+            return toDispatchResponse(dispatch);
+        }
         FollowerDispatchOutboxEntity dispatch = followerDispatchOutboxRepository.findById(dispatchId)
                 .orElseThrow(() -> new EntityNotFoundException("Follower dispatch not found: " + dispatchId));
 
-        dispatch.setStatus(status);
-        dispatch.setStatusMessage(trimToNull(statusMessage));
-        Instant now = Instant.now();
-        if (status == FollowerDispatchStatus.ACKED) {
-            dispatch.setAckedAt(now);
-            dispatch.setFailedAt(null);
-        } else if (status == FollowerDispatchStatus.FAILED) {
-            dispatch.setFailedAt(now);
-            dispatch.setAckedAt(null);
-        } else {
-            dispatch.setAckedAt(null);
-            dispatch.setFailedAt(null);
-        }
+        applyDispatchStatus(dispatch, status, statusMessage);
 
         return toDispatchResponse(followerDispatchOutboxRepository.save(dispatch));
+    }
+
+    private void processFollowerSignal(
+            Long masterAccountId,
+            FollowerRouteCacheItem follower,
+            NormalizedMt5Signal signal
+    ) {
+        if (!hotPathRedisStore.isRedisBackend()) {
+            persistFollowerSignalDirectly(masterAccountId, follower, signal);
+            return;
+        }
+
+        try {
+            Long commandId = hotPathIdAllocator.nextCommandId();
+            if (!hotPathRedisStore.reserveCommand(signal.getEventId(), follower.getFollowerAccountId(), commandId)) {
+                return;
+            }
+
+            ExecutionCommandEntity command = buildCommand(masterAccountId, follower, signal);
+            command.setId(commandId);
+            hotPathRedisStore.storeCommand(command);
+            hotPathPersistenceQueue.enqueueExecutionCommand(command);
+            createDispatchOutboxIfNeeded(command, signal, follower);
+        } catch (Exception ex) {
+            log.warn("Redis hot-path processing failed, fallback to direct DB persistence, eventId={}, followerAccountId={}",
+                    signal.getEventId(), follower.getFollowerAccountId(), ex);
+            persistFollowerSignalDirectly(masterAccountId, follower, signal);
+        }
+    }
+
+    private void persistFollowerSignalDirectly(
+            Long masterAccountId,
+            FollowerRouteCacheItem follower,
+            NormalizedMt5Signal signal
+    ) {
+        if (executionCommandRepository.existsByMasterEventIdAndFollowerAccountId(
+                signal.getEventId(),
+                follower.getFollowerAccountId()
+        )) {
+            return;
+        }
+        ExecutionCommandEntity command = buildCommand(masterAccountId, follower, signal);
+        command.setId(hotPathIdAllocator.nextCommandId());
+        command = executionCommandRepository.save(command);
+        createDispatchOutboxIfNeeded(command, signal, follower);
     }
 
     private ExecutionCommandEntity buildCommand(
@@ -405,16 +528,43 @@ public class CopyEngineService {
         if (command.getStatus() != ExecutionCommandStatus.READY) {
             return;
         }
-        if (followerDispatchOutboxRepository.existsByExecutionCommandId(command.getId())) {
+        Optional<FollowerDispatchOutboxEntity> existingDispatch = hotPathRedisStore.isRedisBackend()
+                ? hotPathRedisStore.findDispatchByExecutionCommandId(command.getId())
+                : followerDispatchOutboxRepository.findByExecutionCommandId(command.getId());
+        if (existingDispatch.isPresent()) {
+            if (!command.getMasterEventId().equals(existingDispatch.get().getMasterEventId())) {
+                log.warn(
+                        "Skip dispatch creation because executionCommandId is already bound to another dispatch, commandId={}, currentEventId={}, existingDispatchId={}, existingEventId={}",
+                        command.getId(),
+                        command.getMasterEventId(),
+                        existingDispatch.get().getId(),
+                        existingDispatch.get().getMasterEventId()
+                );
+            }
             return;
         }
 
         FollowerDispatchOutboxEntity outbox = new FollowerDispatchOutboxEntity();
+        outbox.setId(hotPathIdAllocator.nextDispatchId());
         outbox.setExecutionCommandId(command.getId());
         outbox.setMasterEventId(command.getMasterEventId());
         outbox.setFollowerAccountId(command.getFollowerAccountId());
         outbox.setStatus(FollowerDispatchStatus.PENDING);
         outbox.setPayloadJson(buildDispatchPayload(command, signal, follower));
+        if (hotPathRedisStore.isRedisBackend()) {
+            try {
+                hotPathRedisStore.storeDispatch(outbox);
+                hotPathPersistenceQueue.enqueueFollowerDispatch(outbox);
+                applicationEventPublisher.publishEvent(new FollowerDispatchCreatedEvent(outbox.getId(), outbox.getFollowerAccountId()));
+                return;
+            } catch (Exception ex) {
+                log.warn("Redis hot-path dispatch storage failed, fallback to DB, dispatchId={}, followerAccountId={}",
+                        outbox.getId(), outbox.getFollowerAccountId(), ex);
+            }
+        }
+        if (followerDispatchOutboxRepository.existsByExecutionCommandId(command.getId())) {
+            return;
+        }
         FollowerDispatchOutboxEntity saved = followerDispatchOutboxRepository.save(outbox);
         applicationEventPublisher.publishEvent(new FollowerDispatchCreatedEvent(saved.getId(), saved.getFollowerAccountId()));
     }
@@ -627,6 +777,26 @@ public class CopyEngineService {
         return response;
     }
 
+    private void applyDispatchStatus(
+            FollowerDispatchOutboxEntity dispatch,
+            FollowerDispatchStatus status,
+            String statusMessage
+    ) {
+        dispatch.setStatus(status);
+        dispatch.setStatusMessage(trimToNull(statusMessage));
+        Instant now = Instant.now();
+        if (status == FollowerDispatchStatus.ACKED) {
+            dispatch.setAckedAt(now);
+            dispatch.setFailedAt(null);
+        } else if (status == FollowerDispatchStatus.FAILED) {
+            dispatch.setFailedAt(now);
+            dispatch.setAckedAt(null);
+        } else {
+            dispatch.setAckedAt(null);
+            dispatch.setFailedAt(null);
+        }
+    }
+
     private ExecutionTraceResponse buildTrace(
             Long masterAccountId,
             Long masterOrderId,
@@ -645,9 +815,10 @@ public class CopyEngineService {
         List<Long> commandIds = commandEntities.stream()
                 .map(ExecutionCommandEntity::getId)
                 .toList();
-        Map<Long, List<FollowerDispatchOutboxEntity>> dispatchByCommandId = followerDispatchOutboxRepository
-                .findByExecutionCommandIdInOrderByIdAsc(commandIds)
-                .stream()
+        List<FollowerDispatchOutboxEntity> dispatchEntities = hotPathRedisStore.isRedisBackend()
+                ? hotPathRedisStore.findDispatchesByCommandIds(commandIds)
+                : followerDispatchOutboxRepository.findByExecutionCommandIdInOrderByIdAsc(commandIds);
+        Map<Long, List<FollowerDispatchOutboxEntity>> dispatchByCommandId = dispatchEntities.stream()
                 .collect(Collectors.groupingBy(FollowerDispatchOutboxEntity::getExecutionCommandId));
 
         response.setDispatches(commandIds.stream()

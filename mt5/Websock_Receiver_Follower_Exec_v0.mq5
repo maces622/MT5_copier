@@ -33,7 +33,7 @@ input DispatchReplyMode ReplyMode = REPLY_ACK;
 input string AckMessage          = "dry-run accepted";
 input string FailMessage         = "dry-run rejected";
 input long   FollowerMagicNumber = 880001;
-input string CommentPrefix       = "cp";
+input string CommentPrefix       = "cp1";
 input int    DefaultDeviationPoints = 20;
 
 input int    TimeoutMs           = 5000;
@@ -348,14 +348,7 @@ bool JsonTryGetObject(const string json, const string key, string &value)
 
 string ShortCommentPrefix()
 {
-   string prefix = CommentPrefix;
-   StringTrimLeft(prefix);
-   StringTrimRight(prefix);
-   if(prefix == "")
-      prefix = "cp";
-   if(StringLen(prefix) > 4)
-      prefix = StringSubstr(prefix, 0, 4);
-   return prefix;
+   return "cp1";
 }
 
 string BuildTrackingComment(const long master_position_id, const long master_order_id)
@@ -368,6 +361,46 @@ string BuildTrackingComment(const long master_position_id, const long master_ord
    if(master_order_id > 0)
       return StringFormat("%s|mo=%I64d", prefix, master_order_id);
    return prefix;
+}
+
+string BuildHeldPositionsJson()
+{
+   string out = "";
+   int appended = 0;
+   for(int i=PositionsTotal() - 1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      long position_id = (long)PositionGetInteger(POSITION_IDENTIFIER);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      double price_open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      string comment = PositionGetString(POSITION_COMMENT);
+      long master_order_id = 0;
+      TryExtractTaggedLong(comment, "mo=", master_order_id);
+
+      string item = StringFormat(
+         "{\"ticket\":%I64u,\"position\":%I64d,\"order\":%I64d,\"symbol\":\"%s\",\"volume\":%.8f,\"price_open\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"comment\":\"%s\"}",
+         ticket,
+         position_id,
+         master_order_id,
+         JsonEscape(symbol),
+         volume,
+         price_open,
+         sl,
+         tp,
+         JsonEscape(comment)
+      );
+      if(appended > 0)
+         out += ",";
+      out += item;
+      appended++;
+   }
+   return out;
 }
 
 bool TryExtractTaggedLong(const string text, const string tag, long &value)
@@ -1516,26 +1549,29 @@ string BuildHelloJson()
 {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   string positions = BuildHeldPositionsJson();
    if(FollowerAccountId > 0)
    {
       return StringFormat(
-         "{\"type\":\"HELLO\",\"followerAccountId\":%I64d,\"balance\":%.8f,\"equity\":%.8f,\"ts\":\"%s\"}",
+         "{\"type\":\"HELLO\",\"followerAccountId\":%I64d,\"balance\":%.8f,\"equity\":%.8f,\"ts\":\"%s\",\"positions\":[%s]}",
          FollowerAccountId,
          balance,
          equity,
-         TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
+         TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+         positions
       );
    }
 
    long login = (long)AccountInfoInteger(ACCOUNT_LOGIN);
    string server = AccountInfoString(ACCOUNT_SERVER);
    return StringFormat(
-      "{\"type\":\"HELLO\",\"login\":%I64d,\"server\":\"%s\",\"balance\":%.8f,\"equity\":%.8f,\"ts\":\"%s\"}",
+      "{\"type\":\"HELLO\",\"login\":%I64d,\"server\":\"%s\",\"balance\":%.8f,\"equity\":%.8f,\"ts\":\"%s\",\"positions\":[%s]}",
       login,
       JsonEscape(server),
       balance,
       equity,
-      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
+      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+      positions
    );
 }
 
@@ -1543,11 +1579,13 @@ string BuildHeartbeatJson()
 {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   string positions = BuildHeldPositionsJson();
    return StringFormat(
-      "{\"type\":\"HEARTBEAT\",\"balance\":%.8f,\"equity\":%.8f,\"ts\":\"%s\"}",
+      "{\"type\":\"HEARTBEAT\",\"balance\":%.8f,\"equity\":%.8f,\"ts\":\"%s\",\"positions\":[%s]}",
       balance,
       equity,
-      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
+      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+      positions
    );
 }
 

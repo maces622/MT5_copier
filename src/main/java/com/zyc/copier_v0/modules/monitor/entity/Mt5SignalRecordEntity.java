@@ -1,16 +1,14 @@
 package com.zyc.copier_v0.modules.monitor.entity;
 
+import com.zyc.copier_v0.support.ManualIdGenerator;
 import java.time.Instant;
 import javax.persistence.Column;
 import javax.persistence.Entity;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.Index;
 import javax.persistence.Lob;
 import javax.persistence.PrePersist;
 import javax.persistence.Table;
-import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -28,8 +26,6 @@ import lombok.Setter;
 public class Mt5SignalRecordEntity {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Setter(AccessLevel.NONE)
     private Long id;
 
     @Column(name = "event_id", nullable = false, length = 128)
@@ -68,6 +64,9 @@ public class Mt5SignalRecordEntity {
 
     @PrePersist
     void prePersist() {
+        if (id == null) {
+            id = ManualIdGenerator.nextId();
+        }
         if (receivedAt == null) {
             receivedAt = Instant.now();
         }

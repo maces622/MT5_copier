@@ -191,6 +191,31 @@ public class AccountConfigService {
         routeCacheWriter.refreshMasterRoute(masterAccountId);
     }
 
+    @Transactional
+    public void deleteFollowerAccount(Long accountId) {
+        Mt5AccountEntity account = loadAccount(accountId);
+        if (account.getAccountRole() != Mt5AccountRole.FOLLOWER) {
+            throw new IllegalArgumentException("Only FOLLOWER accounts can be deleted");
+        }
+
+        List<CopyRelationEntity> followerRelations = copyRelationRepository.findByFollowerAccount_IdOrderByPriorityAscIdAsc(accountId);
+        List<Long> masterAccountIds = followerRelations.stream()
+                .map(relation -> relation.getMasterAccount().getId())
+                .distinct()
+                .toList();
+
+        copyRelationRepository.deleteAll(followerRelations);
+        riskRuleRepository.deleteByAccount_Id(accountId);
+        symbolMappingRepository.deleteByFollowerAccount_Id(accountId);
+        mt5AccountRepository.delete(account);
+
+        for (Long masterAccountId : masterAccountIds) {
+            routeCacheWriter.refreshMasterRoute(masterAccountId);
+        }
+        routeCacheWriter.evictFollowerRisk(accountId);
+        routeCacheWriter.evictAccountBinding(account.getServerName(), account.getMt5Login());
+    }
+
     @Transactional(readOnly = true)
     public List<CopyRelationResponse> listRelationsByMaster(Long masterAccountId) {
         return copyRelationRepository.findByMasterAccount_IdAndStatusOrderByPriorityAscIdAsc(

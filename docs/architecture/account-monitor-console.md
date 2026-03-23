@@ -1,160 +1,17 @@
 # 账户与监控控制台方案
 
-## 1. 目标
+## 1. 当前定位
 
-这份文档定义平台侧控制台的目标形态，覆盖两块能力：
+当前 `web-console/` 的定位不是“运营大屏”，而是“配置入口 + 联调入口 + 排障入口”。
 
-1. 账户台：平台用户注册、登录、MT5 账户绑定、分享绑定、风控和主从关系管理
-2. 监控台：账户连接状态、runtime-state、command/dispatch、订单/持仓链路追踪
+它覆盖两块能力：
 
-这份文档同时区分两类内容：
+1. 账户台
+   管理 MT5 账户、风控、关系、symbol mapping、share 配置
+2. 监控台
+   查看 runtime-state、session、command、dispatch、trace
 
-1. 当前仓库已经落地的能力
-2. 后续仍要继续补完的能力
-
-## 2. 设计原则
-
-1. 不推翻现有复制引擎和数据链路，控制台只是平台入口和运维界面
-2. MariaDB 仍然是业务真源，Redis 只承担缓存、热状态和协调
-3. 前端不直接感知 Redis，只消费后端聚合读模型
-4. 当前优先做运维型控制台，不先做营销型收益展示
-
-## 3. 核心业务规则
-
-### 3.1 平台用户
-
-每个平台用户注册后自动生成两类标识：
-
-1. `platform_id`：平台登录标识
-2. `share_id`：可对外展示的公开分享标识
-
-规则：
-
-1. 两者都必须全局唯一
-2. 两者都不使用简单自增整数
-
-### 3.2 MT5 账户
-
-每个 MT5 账户归属于一个平台用户，角色保持：
-
-1. `MASTER`
-2. `FOLLOWER`
-3. `BOTH`
-
-WebSocket-only 场景下，Java 不要求持有 MT5 明文密码。
-
-### 3.3 Master 分享
-
-每个 `MASTER` 账户都可以单独设置一个 `share_code`。
-
-规则：
-
-1. `share_code` 属于 master 账户级，不是用户级
-2. `share_code` 只存哈希，不回显明文
-3. master 可以开启、关闭和重置 `share_code`
-
-### 3.4 Follower 绑定 Master
-
-follower 绑定 master 时，必须同时输入：
-
-1. 目标平台用户的 `share_id`
-2. 目标 master 账户的 `share_code`
-
-确认策略：
-
-1. `share_code` 重置后，只影响新绑定
-2. 已有 follower 关系继续有效
-3. 通过分享创建的新关系默认 `PAUSED`
-4. follower 补完风控后再切到 `ACTIVE`
-5. follower 可以主动解绑；解绑只删除关系，不影响 master 的分享配置和其他 follower
-6. 共享绑定关系的激活、暂停、解绑都由 follower 侧决定
-
-## 4. 数据模型
-
-### 4.1 已落地
-
-1. `platform_users`
-2. `platform_user_sessions`
-3. `master_share_configs`
-4. 现有 `mt5_accounts`
-5. 现有 `risk_rules`
-6. 现有 `copy_relations`
-7. 现有 `symbol_mappings`
-
-### 4.2 当前接口读模型
-
-当前控制台相关读模型已经落地：
-
-1. 账户详情聚合：`PlatformAccountDetailResponse`
-2. 当前用户关系列表聚合：`PlatformCopyRelationViewResponse`
-3. 监控总览：`MonitorDashboardResponse`
-4. 账户监控详情：`MonitorAccountDetailResponse`
-5. 订单/持仓链路追踪：`ExecutionTraceResponse`
-
-## 5. 后端接口状态
-
-### 5.1 认证
-
-已实现：
-
-1. `POST /api/auth/register`
-2. `POST /api/auth/login`
-3. `POST /api/auth/logout`
-4. `GET /api/auth/me`
-5. `PUT /api/auth/me`
-
-当前实现采用服务端 session + HttpOnly cookie。
-
-### 5.2 账户与分享
-
-已实现：
-
-1. `GET /api/me/accounts`
-2. `POST /api/me/accounts`
-3. `GET /api/accounts/{accountId}`
-4. `GET /api/accounts/{accountId}/detail`
-5. `GET /api/accounts/{accountId}/risk-rule`
-6. `GET /api/accounts/{accountId}/relations`
-7. `GET /api/accounts/{accountId}/symbol-mappings`
-8. `GET /api/me/share-profile`
-9. `POST /api/accounts/{accountId}/share-config`
-10. `PUT /api/accounts/{accountId}/share-config`
-11. `POST /api/copy-relations/join-by-share`
-
-### 5.3 当前用户写接口
-
-已实现并按登录态做归属校验：
-
-1. `POST /api/me/accounts`
-2. `POST /api/me/accounts/{accountId}/risk-rule`
-3. `GET /api/me/copy-relations`
-4. `POST /api/me/copy-relations`
-5. `PUT /api/me/copy-relations/{relationId}`
-6. `DELETE /api/me/copy-relations/{relationId}`
-7. `POST /api/me/accounts/{accountId}/symbol-mappings`
-
-### 5.4 监控与追踪
-
-已实现：
-
-1. `GET /api/monitor/dashboard`
-2. `GET /api/monitor/accounts/{accountId}/detail`
-3. `GET /api/monitor/accounts/{accountId}/commands`
-4. `GET /api/monitor/accounts/{accountId}/dispatches`
-5. `GET /api/monitor/traces/order`
-6. `GET /api/monitor/traces/position`
-
-## 6. 前端信息架构
-
-前端已经独立落在 `web-console/`，技术栈为：
-
-1. React
-2. Vite
-3. TypeScript
-4. TanStack Router
-5. TanStack Query
-
-### 6.1 已落地页面
+## 2. 当前页面
 
 1. `/login`
 2. `/register`
@@ -170,73 +27,94 @@ follower 绑定 master 时，必须同时输入：
 12. `/app/traces/position`
 13. `/app/settings/profile`
 
-### 6.2 已落地前端写操作
+## 3. 当前控制台写能力
 
-1. MT5 账户绑定
-2. 风控保存
-3. 同用户主从关系创建/更新
-4. 品种映射保存
-5. share 配置保存
-6. `share_id + share_code` 绑定
-7. 当前用户关系列表查看、同用户关系调整和 follower 主动解绑
-8. 当前用户显示名称和密码修改
+1. 绑定 MT5 账户
+2. 保存 follower 风控
+3. 创建主从关系
+4. 更新关系状态与优先级
+5. 显式解绑关系
+6. 保存 symbol mapping
+7. 保存 share 配置
+8. 通过 `share_id + share_code` 建立 follow 关系
+9. 删除 follower 账户
+10. 修改显示名与密码
 
-### 6.3 页面职责
+## 4. 当前控制台读能力
 
-1. `/app/accounts`
-   负责当前用户 MT5 账户列表和账户绑定
-2. `/app/accounts/:accountId`
-   负责单账户的风控、映射、分享配置和关系局部编辑
-3. `/app/share`
-   展示当前用户 `share_id` 和名下 master 的分享配置
-4. `/app/follow/bind`
-   负责通过 `share_id + share_code` 创建跨用户关系
-5. `/app/relations`
-   负责当前用户视角的关系总览、同用户关系调整和 follower 主动解绑
-6. `/app/monitor/accounts`
-   负责监控列表和筛选
-7. `/app/monitor/accounts/:accountId`
-   负责单账户 runtime、signals、commands、dispatches 视图
-8. `/app/traces/order` / `/app/traces/position`
-   负责按订单或持仓查看复制链路
-9. `/app/settings/profile`
-   负责当前平台用户的显示名称和登录密码修改
+1. 账户列表
+2. 账户详情聚合
+3. 当前用户关系列表
+4. share 档案
+5. monitor dashboard
+6. monitor account detail
+7. command 列表
+8. dispatch 列表
+9. order / position trace
 
-## 7. 权限边界
+## 5. 当前重要语义
 
-Phase 1 保持最小权限模型：
+### 5.1 `PAUSED` 不是解绑
 
-1. `USER`
-2. `ADMIN`
+1. 改成 `PAUSED` 并保存，只是暂停跟单。
+2. 真正解绑要删除关系。
 
-规则：
+### 5.2 删除账户只开放给 follower
 
-1. 普通用户只能查看和修改自己拥有的账户
-2. 普通用户只能以自己拥有的 follower 发起 share 绑定
-3. 普通用户只能读取与自己相关的关系和监控视图
-4. 管理员可以跨用户查看
+1. 当前控制台只允许删除 `FOLLOWER` 账户。
+2. 删除时会同时清理：
+   copy relation
+   risk rule
+   symbol mapping
 
-## 8. 当前已经确认的边界
+### 5.3 控制台不会自动配置 EA
 
-1. 控制台不重写 Copy Engine
-2. 核心交易状态仍以 `execution_commands` 和 `follower_dispatch_outbox` 为真源
-3. Redis pub/sub 只做跨实例通知，不是业务真源
-4. 单节点本地联调推荐 `copier.mt5.follower-exec.realtime-dispatch.backend=local`
+控制台保存的是平台内配置，不会自动下发 EA 的本地输入参数。
 
-## 9. 后续工作
+EA 仍然要手工填写：
 
-当前还没有完全收口的部分：
+1. `WsUrl`
+2. `BearerToken`
+3. `FollowerAccountId`
+4. `ExecutionMode`
 
-1. 更细粒度 RBAC
-2. 异常提示和告警编排
-3. 更完整的个人设置页和安全设置
-4. 更深的监控可视化
-5. 与外部通知或工单系统的集成
+## 6. 当前监控页数据来源
 
-## 10. 实现顺序
+### 概览页
 
-建议继续按下面顺序推进：
+来源于：
 
-1. 保持后端登录态和聚合读模型优先
-2. 继续补完前端监控筛选和用户设置
-3. 最后再补更重的可视化和告警
+1. MT5 账户基础数据
+2. runtime-state
+3. dispatch 计数
+
+### 详情页
+
+来源于：
+
+1. `overview`
+2. `runtimeState`
+3. `wsSessions`
+4. `followerExecSessions`
+5. `commands`
+6. `dispatches`
+7. `traces`
+
+### 当前已确认语义
+
+1. follower 的 `balance / equity` 来自 follower `HELLO / HEARTBEAT`
+2. follower 的 `lastSignalType` 可能为空，这是当前设计内正常现象
+3. 监控页当前通过定时轮询刷新，不是前端直接订阅后端推送
+
+## 7. 当前边界
+
+1. 还没有完整告警中心
+2. 还没有工单联动
+3. 还没有运营型报表
+4. 还没有细粒度 RBAC
+
+## 8. 相关文档
+
+1. [总体架构](./overall-architecture.md)
+2. [模块交互与端到端数据链路](./system-modules-and-dataflows.md)
+3. [前端配置到 EA 参数填写](../operations/frontend-to-ea-setup.md)

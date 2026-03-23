@@ -9,6 +9,9 @@ spring:
       ddl-auto: create-drop
 
 copier:
+  copy-engine:
+    hot-path:
+      backend: DATABASE
   auth:
     session:
       cookie-name: TEST_SESSION

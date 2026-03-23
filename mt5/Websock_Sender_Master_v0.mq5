@@ -273,9 +273,14 @@ bool WS_Connect()
    string srv=AccountInfoString(ACCOUNT_SERVER);
    PrintFormat("WS connected. target=%s account=%I64d server=%s bearer_len=%d",
                WsUrl, login, srv, StringLen(BearerToken));
-   string hello=StringFormat("{\"type\":\"HELLO\",\"login\":%I64d,\"server\":\"%s\",\"ts\":\"%s\"}",
-                             login, JsonEscape(srv),
-                             TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+   string hello=StringFormat(
+      "{\"type\":\"HELLO\",\"login\":%I64d,\"server\":\"%s\",\"ts\":\"%s\"%s,\"positions\":[%s]}",
+      login,
+      JsonEscape(srv),
+      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+      BuildAccountFundsJson(),
+      BuildHeldPositionsJson()
+   );
    g_ws.send(hello);
 
    return true;
@@ -296,8 +301,12 @@ void WS_SendHeartbeat()
 
    if(!WS_Connect()) return;
 
-   string hb=StringFormat("{\"type\":\"HEARTBEAT\",\"ts\":\"%s\"}",
-                          TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS));
+   string hb=StringFormat(
+      "{\"type\":\"HEARTBEAT\",\"ts\":\"%s\"%s,\"positions\":[%s]}",
+      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+      BuildAccountFundsJson(),
+      BuildHeldPositionsJson()
+   );
    if(!g_ws.send(hb))
    {
       g_ws.close();
@@ -361,6 +370,43 @@ string BuildAccountFundsJson()
       AccountInfoDouble(ACCOUNT_BALANCE),
       AccountInfoDouble(ACCOUNT_EQUITY)
    );
+}
+
+string BuildHeldPositionsJson()
+{
+   string out = "";
+   int appended = 0;
+   for(int i=PositionsTotal() - 1; i>=0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      long position_id = (long)PositionGetInteger(POSITION_IDENTIFIER);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      double price_open = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      string comment = PositionGetString(POSITION_COMMENT);
+
+      string item = StringFormat(
+         "{\"ticket\":%I64u,\"position\":%I64d,\"order\":0,\"symbol\":\"%s\",\"volume\":%.8f,\"price_open\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"comment\":\"%s\"}",
+         ticket,
+         position_id,
+         JsonEscape(symbol),
+         volume,
+         price_open,
+         sl,
+         tp,
+         JsonEscape(comment)
+      );
+      if(appended > 0)
+         out += ",";
+      out += item;
+      appended++;
+   }
+   return out;
 }
 
 bool TryFindOpenPositionVolumeById(const long position_id, const string symbol, double &volume_after)

@@ -3,6 +3,7 @@ package com.zyc.copier_v0.modules.account.config;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -14,6 +15,10 @@ import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionCommandType;
 import com.zyc.copier_v0.modules.copy.engine.domain.FollowerDispatchStatus;
 import com.zyc.copier_v0.modules.copy.engine.entity.ExecutionCommandEntity;
 import com.zyc.copier_v0.modules.copy.engine.entity.FollowerDispatchOutboxEntity;
+import com.zyc.copier_v0.modules.account.config.repository.CopyRelationRepository;
+import com.zyc.copier_v0.modules.account.config.repository.Mt5AccountRepository;
+import com.zyc.copier_v0.modules.account.config.repository.RiskRuleRepository;
+import com.zyc.copier_v0.modules.account.config.repository.SymbolMappingRepository;
 import com.zyc.copier_v0.modules.copy.engine.repository.ExecutionCommandRepository;
 import com.zyc.copier_v0.modules.copy.engine.repository.FollowerDispatchOutboxRepository;
 import com.zyc.copier_v0.modules.signal.ingest.domain.Mt5SignalType;
@@ -56,6 +61,18 @@ class PlatformAccountConsoleIntegrationTest {
 
     @Autowired
     private FollowerDispatchOutboxRepository followerDispatchOutboxRepository;
+
+    @Autowired
+    private Mt5AccountRepository mt5AccountRepository;
+
+    @Autowired
+    private CopyRelationRepository copyRelationRepository;
+
+    @Autowired
+    private RiskRuleRepository riskRuleRepository;
+
+    @Autowired
+    private SymbolMappingRepository symbolMappingRepository;
 
     @Test
     void shouldExposeMyAccountsAccountDetailAndMonitorViews() throws Exception {
@@ -252,6 +269,77 @@ class PlatformAccountConsoleIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.followerAccountId").value(followerAccountId))
                 .andExpect(jsonPath("$.masterSymbol").value("XAUUSD"));
+    }
+
+    @Test
+    void shouldDeleteFollowerAccountAndCleanupOwnedConfig() throws Exception {
+        AuthFixture user = registerUser("console-delete-follower");
+        Long masterAccountId = bindAccount(user.userId(), "MASTER");
+        Long followerAccountId = bindAccount(user.userId(), "FOLLOWER");
+
+        Map<String, Object> riskPayload = new HashMap<>();
+        riskPayload.put("balanceRatio", 1.0);
+        riskPayload.put("maxLot", 1.5);
+        mockMvc.perform(post("/api/me/accounts/{accountId}/risk-rule", followerAccountId)
+                        .cookie(user.cookie())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(riskPayload)))
+                .andExpect(status().isOk());
+
+        Map<String, Object> relationPayload = new HashMap<>();
+        relationPayload.put("masterAccountId", masterAccountId);
+        relationPayload.put("followerAccountId", followerAccountId);
+        relationPayload.put("copyMode", "BALANCE_RATIO");
+        relationPayload.put("status", "ACTIVE");
+        mockMvc.perform(post("/api/me/copy-relations")
+                        .cookie(user.cookie())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(relationPayload)))
+                .andExpect(status().isOk());
+
+        Map<String, Object> mappingPayload = new HashMap<>();
+        mappingPayload.put("masterSymbol", "EURUSD");
+        mappingPayload.put("followerSymbol", "EURUSDm");
+        mockMvc.perform(post("/api/me/accounts/{accountId}/symbol-mappings", followerAccountId)
+                        .cookie(user.cookie())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(mappingPayload)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(delete("/api/me/accounts/{accountId}", followerAccountId)
+                        .cookie(user.cookie()))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/me/accounts").cookie(user.cookie()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].id").value(masterAccountId));
+
+        mockMvc.perform(get("/api/me/copy-relations").cookie(user.cookie()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+
+        mockMvc.perform(get("/api/accounts/{accountId}/detail", followerAccountId).cookie(user.cookie()))
+                .andExpect(status().isNotFound());
+
+        org.assertj.core.api.Assertions.assertThat(mt5AccountRepository.findById(followerAccountId)).isEmpty();
+        org.assertj.core.api.Assertions.assertThat(copyRelationRepository.findByFollowerAccount_IdOrderByPriorityAscIdAsc(followerAccountId)).isEmpty();
+        org.assertj.core.api.Assertions.assertThat(riskRuleRepository.findByAccount_Id(followerAccountId)).isEmpty();
+        org.assertj.core.api.Assertions.assertThat(symbolMappingRepository.findByFollowerAccount_IdOrderByMasterSymbolAsc(followerAccountId)).isEmpty();
+    }
+
+    @Test
+    void shouldRejectDeletingMasterAccountFromCurrentUserEndpoint() throws Exception {
+        AuthFixture user = registerUser("console-delete-master");
+        Long masterAccountId = bindAccount(user.userId(), "MASTER");
+
+        mockMvc.perform(delete("/api/me/accounts/{accountId}", masterAccountId)
+                        .cookie(user.cookie()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"))
+                .andExpect(jsonPath("$.message").value("Only FOLLOWER accounts can be deleted"));
+
+        org.assertj.core.api.Assertions.assertThat(mt5AccountRepository.findById(masterAccountId)).isPresent();
     }
 
     private AuthFixture registerUser(String username) throws Exception {

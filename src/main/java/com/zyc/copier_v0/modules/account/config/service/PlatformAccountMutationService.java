@@ -12,6 +12,7 @@ import com.zyc.copier_v0.modules.account.config.api.SaveRiskRuleRequest;
 import com.zyc.copier_v0.modules.account.config.api.SaveSymbolMappingRequest;
 import com.zyc.copier_v0.modules.account.config.api.SymbolMappingResponse;
 import com.zyc.copier_v0.modules.account.config.api.UpdateCopyRelationRequest;
+import com.zyc.copier_v0.modules.account.config.domain.Mt5AccountRole;
 import com.zyc.copier_v0.modules.account.config.entity.CopyRelationEntity;
 import com.zyc.copier_v0.modules.account.config.entity.Mt5AccountEntity;
 import com.zyc.copier_v0.modules.account.config.repository.CopyRelationRepository;
@@ -101,6 +102,15 @@ public class PlatformAccountMutationService {
                 .orElseThrow(() -> new EntityNotFoundException("Copy relation not found: " + relationId));
         assertAccessibleFollowerRelation(relation, servletRequest);
         accountConfigService.deleteCopyRelation(relationId);
+    }
+
+    @Transactional
+    public void deleteMyAccount(Long accountId, HttpServletRequest servletRequest) {
+        Mt5AccountEntity account = loadAccessibleAccount(accountId, servletRequest);
+        if (account.getAccountRole() != Mt5AccountRole.FOLLOWER) {
+            throw new IllegalArgumentException("Only FOLLOWER accounts can be deleted");
+        }
+        accountConfigService.deleteFollowerAccount(accountId);
     }
 
     @Transactional

@@ -1,132 +1,150 @@
 # 总体架构
 
-## 当前真实形态
+## 1. 当前真实部署形态
 
-当前仓库不是完整微服务集群，而是“模块化单体 + 两个 MT5 EA”。
+当前仓库的真实实现是“模块化单体 + 两个 MT5 EA + MariaDB + Redis + Web Console”，不是完整的微服务集群。
 
-当前真实运行组件：
+实际运行单元：
 
-1. 主端 EA：`mt5/Websock_Sender_Master_v0.mq5`
-2. Java 服务：一个 Spring Boot 进程
-3. 从端 EA：`mt5/Websock_Receiver_Follower_Exec_v0.mq5`
-4. MariaDB：配置、command、outbox、审计真源
-5. Redis：缓存、运行态、去重、会话共享、可选跨实例通知
+1. Master EA：`mt5/Websock_Sender_Master_v0.mq5`
+2. Spring Boot 应用：内部包含 user-auth、account-config、signal-ingest、copy-engine、follower-exec、monitor 等模块
+3. Follower EA：`mt5/Websock_Receiver_Follower_Exec_v0.mq5`
+4. MariaDB：配置、执行历史、dispatch 历史、审计历史、恢复基线
+5. Redis：热状态、缓存、会话共享、信号去重、热路径索引、持仓台账热副本
+6. Web Console：`web-console/`
 
-## 当前核心链路
+## 2. 模块分层
 
-### 1. 主端上行
+### 2.1 接入层
 
-1. 主端 EA 监听 `OnTradeTransaction`
-2. 通过 `/ws/trade` 上报 `HELLO / HEARTBEAT / DEAL / ORDER`
-3. Java 标准化信号并落审计
+1. Web Console
+2. Master EA 上行 WebSocket
+3. Follower EA 下行 WebSocket
 
-### 2. 跟单决策
+### 2.2 平台层
 
-1. Copy Engine 根据 `server + login` 绑定主账户
-2. 读取主从路由和 follower 风控
-3. 计算复制指令和手数
-4. 落库 `execution_commands`
-5. 为可执行命令落库 `follower_dispatch_outbox`
+1. `user-auth`
+   负责平台用户注册、登录、会话和 `/api/auth/*`
+2. `account-config`
+   负责 MT5 账户、风控、关系、symbol mapping、share 配置和相关缓存投影
+3. `signal-ingest`
+   负责 `/ws/trade` 握手、信号标准化、去重、事件发布
+4. `copy-engine`
+   负责 command/dispatch 生成、风控计算、热路径写入和异步持久化
+5. `follower-exec`
+   负责 `/ws/follower-exec`、backlog 回放、实时 dispatch 下发、ACK/FAIL 回写
+6. `monitor`
+   负责 runtime-state、signal audit、会话视图、命令/dispatch 追踪和监控聚合
 
-### 3. follower 下行
+### 2.3 数据层
 
-1. follower EA 通过 `/ws/follower-exec` 连接 Java
-2. Java 先回放 backlog，再实时下发新 dispatch
-3. follower EA 执行后回 `ACK / FAIL`
-4. Java 回写 dispatch 状态
+1. MariaDB
+2. Redis
 
-### 4. 监控与运行态
+## 3. 数据所有权
 
-1. runtime-state Redis-first
-2. session registry Redis TTL
-3. 监控接口聚合账户、运行态、dispatch、signal audit
+### 3.1 MariaDB 持有的 durable truth
 
-## 当前架构中的数据分工
+1. 平台用户与会话
+2. MT5 账户
+3. 风控规则
+4. 主从关系
+5. Symbol mapping
+6. Share 配置
+7. Signal audit
+8. `execution_commands`
+9. `follower_dispatch_outbox`
+10. runtime-state 快照
+11. open-position ledger
 
-### MariaDB 负责
+### 3.2 Redis 持有的热状态与协调数据
 
-1. 账户绑定
-2. 风控规则
-3. 主从关系
-4. 品种映射
-5. `execution_commands`
-6. `follower_dispatch_outbox`
-7. 信号审计
+1. `copy:account:binding:*`
+2. `copy:route:*`
+3. `copy:account:risk:*`
+4. `copy:signal:dedup:*`
+5. `copy:runtime:*`
+6. `copy:runtime:positions:*`
+7. `copy:ws:mt5:*`
+8. `copy:ws:follower:*`
+9. `copy:hot:*`
+10. `copy:hot:seq:*`
 
-### Redis 负责
+Redis 的职责是“加速和共享当前状态”，不是替代 MariaDB。
 
-1. route snapshot
-2. risk snapshot
-3. account binding
-4. runtime-state
-5. signal dedup
-6. session registry
-7. 可选的 follower realtime dispatch pub/sub 通知
+## 4. 两条主 WebSocket 链路
 
-原则是：
+### 4.1 Master 上行链路
 
-1. MariaDB 是真源
-2. Redis 是加速层和协调层
-3. Redis 恢复后不能覆盖数据库真相
+1. Master EA 连接 `/ws/trade`
+2. 发送 `HELLO / HEARTBEAT / DEAL / ORDER`
+3. Java 标准化信号
+4. 写 signal audit
+5. 发布 `Mt5SignalAcceptedEvent`
+6. Copy Engine 消费事件并决定是否复制
 
-## 当前已落地的性能优化
+### 4.2 Follower 下行链路
 
-### 1. Redis-first 读取
+1. Follower EA 连接 `/ws/follower-exec`
+2. 发送 `HELLO / HEARTBEAT`
+3. Java 绑定 follower 账户、更新 runtime-state、回放 backlog
+4. Java 推送 `DISPATCH`
+5. Follower EA 执行后回 `ACK / FAIL`
+6. Java 回写 dispatch 状态
 
-Copy Engine 热路径已经从“JPA 直接拼关系”改成：
+## 5. 热路径模式
 
-1. account binding Redis-first
-2. route Redis-first
-3. risk Redis-first
-4. runtime-state Redis-first
+### 5.1 `DATABASE`
 
-### 2. DB fallback 去 N+1
+1. signal audit、command、dispatch 直接走 JPA / MySQL
+2. 实时下发依赖数据库行已经生成
 
-route fallback 和 warmup 场景里，已经不再按 follower 逐个查 risk/mapping，而是批量查后内存组装。
+### 5.2 `REDIS_QUEUE`
 
-### 3. 高频运行态脱离数据库主写
+1. signal audit、command、dispatch 先写 Redis 热状态
+2. follower 实时推送不等待 MySQL 事务提交
+3. 异步 worker 再把热状态持久化到 MySQL
+4. 启动时自动把 `copy:hot:seq:*` 对齐到数据库最大 ID，避免重启后 ID 回退
 
-runtime-state 已经迁到 Redis-first，数据库只保留：
+## 6. 监控架构
 
-1. 节流快照
-2. 断线强制落盘
+监控不是独立采集系统，而是对现有业务状态的聚合读模型：
 
-### 4. Redis TTL 去重
+1. signal-ingest 提供信号审计
+2. master 与 follower 的 `HELLO / HEARTBEAT` 提供 runtime-state
+3. session registry 提供 WebSocket 会话视图
+4. copy-engine 提供 command / dispatch / trace 视图
+5. Web Console 调用监控聚合 API 生成账户概览与详情
 
-MT5 信号去重已经从 JVM 本地内存扩展为 Redis TTL，可支持重启和多实例共享。
+## 7. 启动、预热与恢复
 
-### 5. Redis TTL 会话注册
+当前恢复链路已经包含 3 类动作：
 
-主端和 follower websocket session registry 都支持 Redis TTL 存储。
+1. 从 MariaDB 预热 route/risk/account-binding/runtime-state/open-position ledger
+2. 启动时对齐 `copy:hot:seq:*` 到数据库最大 signal / command / dispatch ID
+3. 等待 MT5 `HELLO / HEARTBEAT` 上报当前持仓，再把 Redis 热状态与 ledger 修正到最新
 
-### 6. 实时推送边界清晰
+这意味着：
 
-单节点下：
+1. Redis 丢失后可以靠 MariaDB 恢复基线
+2. Redis 恢复后不会把 command / dispatch ID 回滚
+3. 持仓跟踪最终仍会被 MT5 当前真实持仓纠正
 
-1. 直接用本节点 `liveSessions`
+## 8. 当前架构边界
 
-多节点下：
+当前仓库没有完整实现以下目标态能力：
 
-1. Redis pub/sub 只做通知
-2. 真正持有 websocket 的实例负责推送
-3. 数据库 outbox 仍是真源
+1. 外部 MQ 骨干
+2. durable claim/lease 式多实例分发补偿
+3. 独立 API Gateway
+4. 独立 Notification Service
+5. 独立 Agent / Scheduler Service
+6. 多 broker 执行 worker 编排
 
-## 当前可靠性约束
+所以当前文档的重点不是“理想微服务蓝图”，而是“当前代码真实如何运行”。
 
-1. command/outbox 继续事务直写数据库
-2. 比例跟单增加 runtime-state 新鲜度门禁
-3. 核心表增加索引和乐观锁
-4. 测试 profile 已隔离本机环境变量污染
+## 9. 详细链路入口
 
-## 目标态与未完成项
+更完整的模块交互、数据主权和端到端步骤，见：
 
-当前还没有实现：
-
-1. MQ 骨干
-2. 多 broker 执行 worker
-3. 独立 Notification Service
-4. API Gateway
-5. Agent Service
-6. durable claim/lease + 补偿 worker
-
-所以这份架构文档的重点不是“理想微服务图”，而是当前真实运行方式和后续演进方向的边界。
+1. [模块交互与端到端数据链路](./system-modules-and-dataflows.md)

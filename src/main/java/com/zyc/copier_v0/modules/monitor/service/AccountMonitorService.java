@@ -11,6 +11,8 @@ import com.zyc.copier_v0.modules.account.config.entity.Mt5AccountEntity;
 import com.zyc.copier_v0.modules.account.config.repository.CopyRelationRepository;
 import com.zyc.copier_v0.modules.account.config.repository.Mt5AccountRepository;
 import com.zyc.copier_v0.modules.copy.engine.domain.FollowerDispatchStatus;
+import com.zyc.copier_v0.modules.copy.engine.persistence.CopyHotPathIdAllocator;
+import com.zyc.copier_v0.modules.copy.engine.persistence.CopyHotPathPersistenceQueue;
 import com.zyc.copier_v0.modules.copy.engine.entity.FollowerDispatchOutboxEntity;
 import com.zyc.copier_v0.modules.copy.engine.repository.FollowerDispatchOutboxRepository;
 import com.zyc.copier_v0.modules.monitor.api.Mt5AccountMonitorOverviewResponse;
@@ -52,6 +54,9 @@ public class AccountMonitorService {
     private final CopyRouteSnapshotReader copyRouteSnapshotReader;
     private final ObjectMapper objectMapper;
     private final MonitorProperties monitorProperties;
+    private final CopyHotPathIdAllocator hotPathIdAllocator;
+    private final CopyHotPathPersistenceQueue hotPathPersistenceQueue;
+    private final Mt5PositionLedgerStore positionLedgerStore;
 
     public AccountMonitorService(
             Mt5SignalRecordRepository signalRecordRepository,
@@ -62,7 +67,10 @@ public class AccountMonitorService {
             Mt5SessionRegistry mt5SessionRegistry,
             CopyRouteSnapshotReader copyRouteSnapshotReader,
             ObjectMapper objectMapper,
-            MonitorProperties monitorProperties
+            MonitorProperties monitorProperties,
+            CopyHotPathIdAllocator hotPathIdAllocator,
+            CopyHotPathPersistenceQueue hotPathPersistenceQueue,
+            Mt5PositionLedgerStore positionLedgerStore
     ) {
         this.signalRecordRepository = signalRecordRepository;
         this.runtimeStateStore = runtimeStateStore;
@@ -73,6 +81,9 @@ public class AccountMonitorService {
         this.copyRouteSnapshotReader = copyRouteSnapshotReader;
         this.objectMapper = objectMapper;
         this.monitorProperties = monitorProperties;
+        this.hotPathIdAllocator = hotPathIdAllocator;
+        this.hotPathPersistenceQueue = hotPathPersistenceQueue;
+        this.positionLedgerStore = positionLedgerStore;
     }
 
     @EventListener
@@ -82,6 +93,7 @@ public class AccountMonitorService {
         Long accountId = resolveAccountId(signal.getServer(), signal.getLogin());
 
         Mt5SignalRecordEntity record = new Mt5SignalRecordEntity();
+        record.setId(hotPathIdAllocator.nextSignalRecordId());
         record.setEventId(signal.getEventId());
         record.setSignalType(signal.getType().name());
         record.setSessionId(signal.getSessionId());
@@ -93,7 +105,7 @@ public class AccountMonitorService {
         record.setSourceTimestamp(signal.getSourceTimestamp());
         record.setReceivedAt(signal.getReceivedAt());
         record.setPayloadJson(writePayload(signal));
-        signalRecordRepository.save(record);
+        hotPathPersistenceQueue.enqueueSignalRecord(record);
 
         if (signal.getLogin() == null || !StringUtils.hasText(signal.getServer())) {
             return;
@@ -121,6 +133,16 @@ public class AccountMonitorService {
         state.setUpdatedAt(signal.getReceivedAt());
         runtimeStateStore.upsert(state);
         runtimeStateStore.maybePersist(state);
+        if (positionLedgerStore.hasPositionsSnapshot(signal.getPayload())) {
+            positionLedgerStore.reconcile(
+                    accountId,
+                    signal.getLogin(),
+                    signal.getServer(),
+                    signal.getMasterAccountKey(),
+                    positionLedgerStore.extractFromPayload(signal.getPayload(), signal.getReceivedAt()),
+                    signal.getReceivedAt()
+            );
+        }
     }
 
     @EventListener
@@ -304,6 +326,8 @@ public class AccountMonitorService {
         response.setLastSignalAt(entity.getLastSignalAt());
         response.setLastSignalType(entity.getLastSignalType());
         response.setLastEventId(entity.getLastEventId());
+        response.setBalance(entity.getBalance());
+        response.setEquity(entity.getEquity());
         response.setUpdatedAt(entity.getUpdatedAt());
         return response;
     }

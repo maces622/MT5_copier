@@ -4,6 +4,7 @@ import com.zyc.copier_v0.modules.copy.engine.entity.ExecutionCommandEntity;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 
 public interface ExecutionCommandRepository extends JpaRepository<ExecutionCommandEntity, Long> {
 
@@ -20,4 +21,7 @@ public interface ExecutionCommandRepository extends JpaRepository<ExecutionComma
     List<ExecutionCommandEntity> findByMasterAccountIdAndMasterPositionIdOrderByIdAsc(Long masterAccountId, Long masterPositionId);
 
     Optional<ExecutionCommandEntity> findFirstByMasterEventIdAndFollowerAccountId(String masterEventId, Long followerAccountId);
+
+    @Query("select coalesce(max(e.id), 0) from ExecutionCommandEntity e")
+    Optional<Long> findMaxId();
 }

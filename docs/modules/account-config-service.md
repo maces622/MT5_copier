@@ -1,190 +1,131 @@
 # 账户与配置服务
 
-## 目标
+## 1. 当前职责
 
-这个模块负责维护跟单系统的静态配置真源：
+`account-config` 负责维护跟单系统的静态配置真源：
 
-1. MT5 账户绑定
-2. 主从关系
-3. 风控规则
-4. 品种映射
-5. 供 Copy Engine 使用的 route/risk/account-binding 缓存
+1. MT5 账户
+2. follower 风控
+3. 主从关系
+4. symbol mapping
+5. master share 配置
+6. route/risk/account-binding 的 Redis 投影
 
-当前实现里，MariaDB 是配置真源，Redis 是热缓存层。
+当前规则是：
 
-## 当前已实现能力
+1. MariaDB 是配置真源
+2. Redis 只存投影快照
+3. Copy Engine 读 Redis-first，miss 再回源 MariaDB
 
-1. `POST /api/accounts` 绑定或更新 MT5 账户
-2. `POST /api/risk-rules` upsert follower 风控
-3. `POST /api/copy-relations` 创建主从关系
-4. `PUT /api/copy-relations/{relationId}` 更新关系状态和模式
-5. `POST /api/symbol-mappings` upsert follower 品种映射
-6. `GET /api/accounts`
-7. `GET /api/copy-relations/master/{masterAccountId}`
-8. 本地 bootstrap 命令行初始化
-9. `GET /api/me/share-profile`
-10. `POST /api/accounts/{accountId}/share-config`
-11. `PUT /api/accounts/{accountId}/share-config`
-12. `POST /api/copy-relations/join-by-share`
-13. `GET /api/me/accounts`
-14. `POST /api/me/accounts`
-15. `POST /api/me/accounts/{accountId}/risk-rule`
-16. `GET /api/me/copy-relations`
-17. `POST /api/me/copy-relations`
-18. `PUT /api/me/copy-relations/{relationId}`
-19. `POST /api/me/accounts/{accountId}/symbol-mappings`
-20. `GET /api/accounts/{accountId}`
-21. `GET /api/accounts/{accountId}/detail`
-22. `GET /api/accounts/{accountId}/risk-rule`
-23. `GET /api/accounts/{accountId}/relations`
-24. `GET /api/accounts/{accountId}/symbol-mappings`
+## 2. 主要输入与输出
 
-## 数据模型
+### 输入
 
-### 1. MT5 账户
+1. Web Console 的 `/api/me/*` 写请求
+2. bootstrap 初始化数据
+3. 兼容保留的基础配置接口
 
-核心字段：
+### 输出
 
-1. `userId`
-2. `serverName`
-3. `mt5Login`
-4. `accountRole`
-5. `status`
-6. `credentialCiphertext`
-7. `credentialVersion`
+1. MariaDB 中的配置记录
+2. Redis 中的 route/risk/account-binding 快照
+3. 给 Copy Engine 和 Monitor 使用的只读配置投影
 
-说明：
+## 3. 当前已落地能力
 
-1. Java 当前不直接登录 MT5，所以 WebSocket-only 账户可以不填 `credential`
-2. 如果传了 `credential`，仍会按受控方式加密落库
+1. 绑定或更新 MT5 账户
+2. 支持 WebSocket-only 账户不填 `credential`
+3. 保存 follower 风控
+4. 保存主从关系
+5. 更新关系状态与优先级
+6. 保存 symbol mapping
+7. 保存 master share 配置
+8. `share_id + share_code` 建立 follow 关系
+9. 显式解绑关系
+10. 仅删除 follower 账户
 
-### 2. 主从关系
+## 4. 关键接口
 
-核心字段：
+### 当前用户视角接口
 
-1. `masterAccountId`
-2. `followerAccountId`
-3. `copyMode`
-4. `status`
-5. `priority`
-6. `configVersion`
+1. `GET /api/me/accounts`
+2. `POST /api/me/accounts`
+3. `DELETE /api/me/accounts/{accountId}`
+4. `POST /api/me/accounts/{accountId}/risk-rule`
+5. `GET /api/me/copy-relations`
+6. `POST /api/me/copy-relations`
+7. `PUT /api/me/copy-relations/{relationId}`
+8. `DELETE /api/me/copy-relations/{relationId}`
+9. `POST /api/me/accounts/{accountId}/symbol-mappings`
+10. `GET /api/me/share-profile`
 
-当前默认模式已经切到 `BALANCE_RATIO`。
+### 读模型接口
 
-### 4. Master 分享配置
+1. `GET /api/accounts/{accountId}`
+2. `GET /api/accounts/{accountId}/detail`
+3. `GET /api/accounts/{accountId}/risk-rule`
+4. `GET /api/accounts/{accountId}/relations`
+5. `GET /api/accounts/{accountId}/symbol-mappings`
+6. `POST /api/accounts/{accountId}/share-config`
+7. `PUT /api/accounts/{accountId}/share-config`
+8. `POST /api/copy-relations/join-by-share`
 
-当前已新增 master 分享配置层：
+## 5. 关键业务语义
 
-1. `share_id` 属于平台用户
-2. `share_code` 属于 master 账户
-3. `share_code` 按哈希存储
-4. follower 可通过 `share_id + share_code` 跨用户建立主从关系
+### 5.1 `PAUSED` 不等于解绑
 
-### 3. 风控规则
+1. 把关系改成 `PAUSED` 再保存，只是暂停复制。
+2. 真正解绑关系，必须删除对应的 `copy relation`。
 
-核心字段：
+### 5.2 删除账户当前只开放给 follower
 
-1. `fixedLot`
-2. `balanceRatio`
-3. `maxLot`
-4. `maxSlippagePoints`
-5. `maxSlippagePips`
-6. `allowedSymbols`
-7. `blockedSymbols`
-8. `followTpSl`
-9. `reverseFollow`
+`DELETE /api/me/accounts/{accountId}` 只允许删除 `FOLLOWER` 账户。
 
-## Redis 缓存职责
+删除 follower 时会同时清理：
 
-这个模块负责把数据库真源投影成 Redis 快照，供高频路径直接读。
+1. 该 follower 参与的关系
+2. 该 follower 的风控
+3. 该 follower 的 symbol mapping
 
-当前 key：
+当前不会开放给 `MASTER` 或 `BOTH`，避免误删主链路配置。
 
-1. `copy:route:master:{masterAccountId}`
-2. `copy:route:version:{masterAccountId}`
-3. `copy:account:risk:{followerAccountId}`
-4. `copy:account:binding:{server}:{login}`
+### 5.3 `credential` 与 EA token 不是一回事
 
-这些缓存都不是业务真源，丢失后可以从 MariaDB 重建。
+1. 前端里的 `credential` 是平台侧保存的 MT5 凭证字段。
+2. EA 连接 websocket 用的是后端配置里的 `BearerToken`。
+3. 前端配置不会自动下发 EA 的 `WsUrl`、`BearerToken`、`FollowerAccountId`。
 
-## 当前已落地的优化
+## 6. Redis 投影
 
-### 1. Redis-first 配置读取
+当前最关键的 Redis key：
 
-Copy Engine 现在不会在热路径上频繁直接扫关系表，而是优先读：
+1. `copy:account:binding:{server}:{login}`
+2. `copy:route:master:{masterAccountId}`
+3. `copy:route:version:{masterAccountId}`
+4. `copy:account:risk:{followerAccountId}`
 
-1. master account binding
-2. master route snapshot
-3. follower risk snapshot
+当配置变更时，会同步刷新这些快照，供 Copy Engine 热路径直接读取。
 
-只有 Redis miss 时才回源数据库并回填。
+## 7. 与其他模块的交互
 
-### 2. 启动预热
+1. `user-auth`
+   提供当前登录用户上下文，决定账户与关系的可见范围和写权限。
+2. `copy-engine`
+   读取 account-binding、route、risk、symbol mapping。
+3. `monitor`
+   读取账户基础信息并与 runtime-state、dispatch 计数拼成监控概览。
+4. `web-console`
+   当前最主要的写入口。
 
-服务启动后会预热：
+## 8. 当前边界
 
-1. route
-2. risk
-3. account binding
+1. 不负责真实下单
+2. 不负责交易审计
+3. 不把 Redis 当配置真源
+4. 当前没有把配置变更再对外发布到独立 MQ
 
-这样本地联调和服务重启后的第一笔单不会总是打到数据库冷路径。
+## 9. 相关文档
 
-### 3. Route fallback 批量装配
-
-之前 route fallback 在 miss/warmup 场景会按 follower 逐个查：
-
-1. risk rule
-2. symbol mapping
-
-现在已经改成批量查询后在内存组装，消掉了这一段的 N+1。
-
-### 4. 乐观锁和索引
-
-核心配置表都加了：
-
-1. 关键索引
-2. `@Version row_version`
-
-目的是降低并发配置更新时的覆盖风险，而不是依赖裸 `save()`。
-
-### 5. Bootstrap 初始化
-
-为了保留“命令行初始化”的使用习惯，当前仓库已经支持：
-
-1. 用 JSON 定义账户、关系、风控、映射
-2. 一次性落库
-3. 自动刷新缓存
-
-### 6. Share 绑定扩展
-
-当前已经支持：
-
-1. master 开启或关闭分享
-2. master 重置 `share_code`
-3. follower 通过 `share_id + share_code` 建立关系
-4. 新关系默认 `PAUSED`
-5. 当前登录用户视角的账户详情、风控、关系、映射读取接口已落地
-6. 当前登录用户视角的账户绑定、风控保存、关系创建/更新、品种映射保存接口已落地
-7. 当前登录用户视角的关系列表聚合接口 `GET /api/me/copy-relations` 已落地，可直接支撑关系管理页
-
-## 设计边界
-
-1. 这个模块不负责真实下单
-2. 这个模块不负责交易审计流水
-3. 这个模块不把 Redis 当真源
-4. 这个模块当前没有对外 MQ 广播配置变更
-5. 新增的 `/api/me/accounts` 和 `/api/accounts/{accountId}/*` 已按登录态做归属校验
-6. `POST /api/me/accounts`、`POST /api/me/accounts/{accountId}/risk-rule`、`GET /api/me/copy-relations`、`POST /api/me/copy-relations`、`PUT /api/me/copy-relations/{relationId}`、`POST /api/me/accounts/{accountId}/symbol-mappings` 已按登录态做归属校验
-7. 现有 `/api/accounts`、`/api/risk-rules`、`/api/copy-relations`、`/api/symbol-mappings` 等基础写接口仍保留，主要用于 bootstrap 和历史兼容
-
-## 当前未完成项
-
-1. Redisson 分布式锁还没有引入
-2. 配置变更事件还没有对外发布到 MQ
-3. 更细粒度的关系级风控参数还没有补齐
-
-## 本地联调建议
-
-1. 先用 bootstrap 或 REST API 把账户、关系、风控、映射写进 MariaDB
-2. 再启动 `local` profile 服务
-3. 让 Redis 只承担缓存，不手工往 Redis 写业务配置
+1. [总体架构](../architecture/overall-architecture.md)
+2. [模块交互与端到端数据链路](../architecture/system-modules-and-dataflows.md)
+3. [前端配置到 EA 参数填写](../operations/frontend-to-ea-setup.md)

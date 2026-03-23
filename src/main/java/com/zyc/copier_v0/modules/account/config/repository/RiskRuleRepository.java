@@ -11,4 +11,6 @@ public interface RiskRuleRepository extends JpaRepository<RiskRuleEntity, Long> 
     Optional<RiskRuleEntity> findByAccount_Id(Long accountId);
 
     List<RiskRuleEntity> findByAccount_IdIn(Collection<Long> accountIds);
+
+    void deleteByAccount_Id(Long accountId);
 }

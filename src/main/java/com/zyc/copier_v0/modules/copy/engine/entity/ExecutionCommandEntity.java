@@ -5,14 +5,13 @@ import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionCommandType;
 import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionCommandStatus;
 import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionRejectReason;
 import com.zyc.copier_v0.modules.signal.ingest.domain.Mt5SignalType;
+import com.zyc.copier_v0.support.ManualIdGenerator;
 import java.math.BigDecimal;
 import java.time.Instant;
 import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.EnumType;
 import javax.persistence.Enumerated;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.Index;
 import javax.persistence.PrePersist;
@@ -43,8 +42,6 @@ import lombok.Setter;
 public class ExecutionCommandEntity {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Setter(AccessLevel.NONE)
     private Long id;
 
     @Column(name = "master_event_id", nullable = false, length = 128)
@@ -133,6 +130,9 @@ public class ExecutionCommandEntity {
 
     @PrePersist
     void prePersist() {
+        if (id == null) {
+            id = ManualIdGenerator.nextId();
+        }
         Instant now = Instant.now();
         createdAt = now;
         updatedAt = now;

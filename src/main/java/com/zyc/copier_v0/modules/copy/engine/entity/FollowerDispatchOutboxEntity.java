@@ -1,13 +1,12 @@
 package com.zyc.copier_v0.modules.copy.engine.entity;
 
 import com.zyc.copier_v0.modules.copy.engine.domain.FollowerDispatchStatus;
+import com.zyc.copier_v0.support.ManualIdGenerator;
 import java.time.Instant;
 import javax.persistence.Column;
 import javax.persistence.Entity;
 import javax.persistence.EnumType;
 import javax.persistence.Enumerated;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.Index;
 import javax.persistence.Lob;
@@ -34,8 +33,6 @@ import lombok.Setter;
 public class FollowerDispatchOutboxEntity {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Setter(AccessLevel.NONE)
     private Long id;
 
     @Column(name = "execution_command_id", nullable = false)
@@ -79,6 +76,9 @@ public class FollowerDispatchOutboxEntity {
 
     @PrePersist
     void prePersist() {
+        if (id == null) {
+            id = ManualIdGenerator.nextId();
+        }
         Instant now = Instant.now();
         createdAt = now;
         updatedAt = now;
