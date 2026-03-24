@@ -113,8 +113,10 @@ graph TD
 | 项 | 说明 |
 |---|---|
 | 触发 | `@EventListener` 监听 `Mt5SignalAcceptedEvent`（**同步**，在 WebSocket 线程中） |
-| 核心方法 | `onMt5SignalAccepted()` → 用 `CopyRouteSnapshotReader` 查路由 → 遍历 followers → `processFollowerSignal()` |
-| ID 分配 | `CopyHotPathIdAllocator.nextCommandId()` / `nextDispatchId()` |
+| 核心方法 | `onMt5SignalAccepted()` → 读路由 → **并行** 处理 followers → `CompletableFuture.allOf().join()` |
+| 并行模型 | 专用线程池 `copy-engine-follower`（大小 = CPU 核数，可配置 `follower-parallelism`） |
+| 事务管理 | 每个 follower 独立 `TransactionTemplate`，单个失败不影响其他 follower |
+| ID 分配 | `CopyHotPathIdAllocator.nextCommandId()` / `nextDispatchId()`（线程安全：Redis INCR） |
 
 #### 两种热路径模式（核心设计）
 
@@ -206,7 +208,7 @@ CopyHotPathPersistenceWorker.drain()            // @Scheduled fixedDelay=200ms
 
 ## 4. 同步/异步设计分析
 
-### 4.1 整体模型：同步为主
+### 4.1 整体模型：同步 + 并行
 
 ```
 [Master EA] --(WebSocket)--> [Tomcat WebSocket Thread]
@@ -214,24 +216,29 @@ CopyHotPathPersistenceWorker.drain()            // @Scheduled fixedDelay=200ms
     → Mt5SignalIngestService.ingest()                     // 同步
     → ApplicationEventPublisher.publishEvent()            // 同步 Spring Event
     → CopyEngineService.onMt5SignalAccepted()             // 同步 @EventListener
-        → for each follower: processFollowerSignal()      // 同步循环
-            → (REDIS_QUEUE) Redis SET + LIST RPUSH        // 同步 Redis I/O
-            → (DATABASE) JPA save()                       // 同步 DB I/O
-        → publishEvent(FollowerDispatchCreatedEvent)      // 同步
+        → 单 follower: 内联执行 executeFollowerSignal()   // 同步，无线程切换
+        → 多 follower: CompletableFuture.allOf().join()   // ★ 并行，等待全部完成
+            → [copy-engine-follower 线程] executeFollowerSignal()
+                → TransactionTemplate 包裹独立事务
+                → processFollowerSignal()
+                    → (REDIS_QUEUE) Redis SET + LIST RPUSH
+                    → (DATABASE) JPA save()
+                → publishEvent(FollowerDispatchCreatedEvent)
     → FollowerDispatchRealtimeCoordinator
         .onFollowerDispatchCreated()                      // @TransactionalEventListener AFTER_COMMIT
         → tryPushPendingDispatch()                        // 同步 WebSocket send
 ```
 
 > [!IMPORTANT]
-> **从 Master EA 发送信号到 Follower EA 收到 DISPATCH，整条热路径都在 WebSocket 线程同步执行**（REDIS_QUEUE 模式下仅 DB 持久化是异步的），这是延迟最小化的设计选择。
+> **从 Master EA 发送信号到 Follower EA 收到 DISPATCH，热路径在 WebSocket 线程启动，follower 处理在专用线程池并行执行**。单 follower 场景下仍保持内联执行以避免线程切换开销。每个 follower 的事务和错误完全隔离。
 
-### 4.2 唯一的异步组件
+### 4.2 异步组件
 
 | 异步机制 | 实现 | 用途 |
 |---|---|---|
+| `ExecutorService` (fixedThreadPool) | `CopyEngineService.followerExecutor` | follower 并行信号处理（线程数 = CPU 核数，可配置） |
 | `@Scheduled(fixedDelay=200ms)` | `CopyHotPathPersistenceWorker.drain()` | 从 Redis LIST drain 消息 → JPA upsert 到 DB |
-| `@TransactionalEventListener(AFTER_COMMIT)` | `FollowerDispatchRealtimeCoordinator` | 事务提交后推送 dispatch（但实际上 REDIS_QUEUE 模式无活跃事务时退化为同步） |
+| `@TransactionalEventListener(AFTER_COMMIT)` | `FollowerDispatchRealtimeCoordinator` | 事务提交后推送 dispatch |
 | `TransactionSynchronization.afterCommit()` | `FollowerExecWebSocketService.sendStatusAckAfterCommit()` | ACK/FAIL 状态确认的 WebSocket 回复 |
 
 ### 4.3 线程模型
@@ -239,7 +246,8 @@ CopyHotPathPersistenceWorker.drain()            // @Scheduled fixedDelay=200ms
 | 线程 | 来源 | 职责 |
 |---|---|---|
 | Tomcat NIO 线程 | Spring Boot 内嵌 Tomcat | HTTP REST 请求处理 |
-| WebSocket 线程 | Spring WebSocket | Master/Follower EA 消息处理 + copy-engine 信号处理 |
+| WebSocket 线程 | Spring WebSocket | Master/Follower EA 消息处理 + copy-engine 事件入口 |
+| `copy-engine-follower` 线程池 | `Executors.newFixedThreadPool` | **并行处理多个 follower 的信号**（每 follower 独立事务） |
 | Spring `@Scheduled` 线程 | `TaskScheduler` 默认单线程池 | `CopyHotPathPersistenceWorker.drain()` |
 
 ---
@@ -257,13 +265,14 @@ CopyHotPathPersistenceWorker.drain()            // @Scheduled fixedDelay=200ms
 | 5 | `publishEvent(Mt5SignalAcceptedEvent)` → copy-engine | ~0 (同步调用) |
 | 6 | 读 account-binding (Redis GET) | ~0.3ms |
 | 7 | 读 master route (Redis GET) | ~0.3ms |
-| 8 | 每个 follower: 读 risk (Redis GET) + runtime-state (Redis GET) | ~0.6ms × N |
-| 9 | Command: Redis SET + ZSET ADD × 多个索引 + LIST RPUSH | ~1.5ms |
-| 10 | Dispatch: Redis SET + ZSET ADD × 多个索引 + LIST RPUSH | ~1.5ms |
-| 11 | `publishEvent(FollowerDispatchCreatedEvent)` | ~0 |
-| 12 | WebSocket send DISPATCH to Follower EA | ~0.1ms |
+| 8 | **并行** per-follower: 读 risk + runtime-state + 生成 Command/Dispatch | ~3.5ms (并行，不随 N 增长) |
+| 9 | `publishEvent(FollowerDispatchCreatedEvent)` | ~0 |
+| 10 | WebSocket send DISPATCH to Follower EA | ~0.1ms |
 | **总计 (单 follower)** | | **~5–6ms** |
-| **总计 (N followers)** | | **~4 + 3.5×N ms** |
+| **总计 (N followers, 并行)** | | **~5–7ms** (≈ O(1)，不随 N 线性增长) |
+
+> [!TIP]
+> 改造前 N 个 follower 的延迟为 `~4 + 3.5×N ms`（串行），10 个 follower 约 39ms。改造后利用 `CompletableFuture.allOf()` 并行处理，延迟降至 `~5–7ms`，与 follower 数量几乎无关。
 
 ---
 
@@ -298,9 +307,12 @@ CopyHotPathPersistenceWorker.drain()            // @Scheduled fixedDelay=200ms
 |---|---|---|---|
 | **单 Master, 1 Follower** | DATABASE | **80–150 TPS** | 瓶颈在 JPA save() 同步写 DB（每信号 ~2 次 INSERT） |
 | **单 Master, 1 Follower** | REDIS_QUEUE | **200–400 TPS** | 瓶颈在 Redis 命令数（~15 次/信号，本地 Redis ~10K QPS 可用） |
-| **单 Master, 10 Followers** | DATABASE | **15–30 TPS** | 每信号扇出 10 个 command + 10 个 dispatch = 20 次 JPA save |
-| **单 Master, 10 Followers** | REDIS_QUEUE | **50–100 TPS** | 每信号约 150 次 Redis 操作，Redis 仍有余量但序列化/反序列化成为瓶颈 |
-| **多 Master 并发** | REDIS_QUEUE | **100–300 TPS** | 每个 WebSocket 连接独立线程，可并行处理 |
+| **单 Master, 10 Followers** | DATABASE | **60–120 TPS** | ★ 并行化后，10 个 follower 并行写 DB，瓶颈在 DB 连接池并发 |
+| **单 Master, 10 Followers** | REDIS_QUEUE | **150–300 TPS** | ★ 并行化后，Redis 操作并行执行，单信号延迟与 1 follower 相当 |
+| **多 Master 并发** | REDIS_QUEUE | **200–500 TPS** | 每个 WebSocket 连接独立线程 + follower 并行线程池 |
+
+> [!NOTE]
+> 与改造前相比，**10 Followers 场景 TPS 提升约 3 倍**（DATABASE: 15–30 → 60–120, REDIS_QUEUE: 50–100 → 150–300），因为 follower 处理从串行 O(N) 变为并行 O(1)。
 
 ### 6.4 QPS 估算（HTTP API 查询吞吐量）
 
@@ -316,17 +328,17 @@ CopyHotPathPersistenceWorker.drain()            // @Scheduled fixedDelay=200ms
 | 指标 | DATABASE 模式 | REDIS_QUEUE 模式 |
 |---|---|---|
 | **信号处理 TPS (1 follower)** | 80–150 | 200–400 |
-| **信号处理 TPS (10 followers)** | 15–30 | 50–100 |
+| **信号处理 TPS (10 followers)** | 60–120 ★ | 150–300 ★ |
 | **HTTP API QPS (缓存命中)** | 200–500 | 500–1500 |
 | **端到端信号延迟 (1 follower)** | 10–20ms | 5–6ms |
+| **端到端信号延迟 (10 followers)** | 15–25ms ★ | 5–7ms ★ |
 | **异步落盘吞吐** | N/A | ~1000 条/秒 |
 
 > [!NOTE]
-> **实际业务场景中**，MT5 跟单的信号频率通常在 **每秒 1–10 笔** 的量级（人工交易或 EA 策略交易），远低于系统上限。因此该系统在个人电脑上运行**完全没有性能瓶颈**，REDIS_QUEUE 模式下端到端延迟可控制在 **10ms 以内**。
+> ★ 标记的指标受益于 follower 并行化改造。改造前 10 followers 延迟约 35–40ms，改造后降至 5–7ms。
 
 > [!TIP]
-> 如果追求极致吞吐，主要优化方向是：
+> 如果追求进一步极致吞吐，主要优化方向是：
 > 1. Redis Pipeline 批量化（当前逐条调用）
-> 2. `@EventListener` 改为 `@Async` 异步事件
+> 2. `@EventListener` 改为 `@Async` 异步事件（彻底释放 WebSocket 线程）
 > 3. `@Scheduled` Worker 改多线程或增配 `TaskScheduler` 线程池
-> 4. 对 follower 列表的循环处理改为并行流

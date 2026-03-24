@@ -13,6 +13,7 @@ import com.zyc.copier_v0.modules.account.config.domain.CopyMode;
 import com.zyc.copier_v0.modules.copy.engine.api.ExecutionCommandResponse;
 import com.zyc.copier_v0.modules.copy.engine.api.ExecutionTraceResponse;
 import com.zyc.copier_v0.modules.copy.engine.api.FollowerDispatchOutboxResponse;
+import com.zyc.copier_v0.modules.copy.engine.config.CopyHotPathProperties;
 import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionCommandType;
 import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionCommandStatus;
 import com.zyc.copier_v0.modules.copy.engine.domain.ExecutionRejectReason;
@@ -37,18 +38,25 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.Map;
 import java.util.stream.Collectors;
+import javax.annotation.PreDestroy;
 import javax.persistence.EntityNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -66,6 +74,8 @@ public class CopyEngineService {
     private final CopyHotPathPersistenceQueue hotPathPersistenceQueue;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher applicationEventPublisher;
+    private final ExecutorService followerExecutor;
+    private final TransactionTemplate transactionTemplate;
 
     public CopyEngineService(
             CopyRouteSnapshotReader copyRouteSnapshotReader,
@@ -77,7 +87,9 @@ public class CopyEngineService {
             CopyHotPathRedisStore hotPathRedisStore,
             CopyHotPathPersistenceQueue hotPathPersistenceQueue,
             ObjectMapper objectMapper,
-            ApplicationEventPublisher applicationEventPublisher
+            ApplicationEventPublisher applicationEventPublisher,
+            CopyHotPathProperties hotPathProperties,
+            PlatformTransactionManager transactionManager
     ) {
         this.copyRouteSnapshotReader = copyRouteSnapshotReader;
         this.executionCommandRepository = executionCommandRepository;
@@ -89,10 +101,30 @@ public class CopyEngineService {
         this.hotPathPersistenceQueue = hotPathPersistenceQueue;
         this.objectMapper = objectMapper;
         this.applicationEventPublisher = applicationEventPublisher;
+        int parallelism = hotPathProperties.resolvedFollowerParallelism();
+        this.followerExecutor = Executors.newFixedThreadPool(parallelism, r -> {
+            Thread t = new Thread(r, "copy-engine-follower");
+            t.setDaemon(true);
+            return t;
+        });
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        log.info("CopyEngineService initialized with followerParallelism={}", parallelism);
+    }
+
+    @PreDestroy
+    void shutdown() {
+        followerExecutor.shutdown();
+        try {
+            if (!followerExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                followerExecutor.shutdownNow();
+            }
+        } catch (InterruptedException ex) {
+            followerExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     @EventListener
-    @Transactional
     public void onMt5SignalAccepted(Mt5SignalAcceptedEvent event) {
         NormalizedMt5Signal signal = event.getSignal();
         if (signal.getType() != Mt5SignalType.DEAL && signal.getType() != Mt5SignalType.ORDER) {
@@ -111,15 +143,40 @@ public class CopyEngineService {
         }
 
         Mt5AccountBindingCacheSnapshot masterAccount = masterAccountOptional.get();
-        MasterRouteCacheSnapshot routeSnapshot = copyRouteSnapshotReader.loadMasterRoute(masterAccount.getAccountId());
-        if (routeSnapshot.getFollowers().isEmpty()) {
+        Long masterAccountId = masterAccount.getAccountId();
+        MasterRouteCacheSnapshot routeSnapshot = copyRouteSnapshotReader.loadMasterRoute(masterAccountId);
+        List<FollowerRouteCacheItem> followers = routeSnapshot.getFollowers();
+        if (followers.isEmpty()) {
             log.info("No active followers for master account, masterAccountId={}, eventId={}",
-                    masterAccount.getAccountId(), signal.getEventId());
+                    masterAccountId, signal.getEventId());
             return;
         }
 
-        for (FollowerRouteCacheItem follower : routeSnapshot.getFollowers()) {
-            processFollowerSignal(masterAccount.getAccountId(), follower, signal);
+        if (followers.size() == 1) {
+            executeFollowerSignal(masterAccountId, followers.get(0), signal);
+            return;
+        }
+
+        CompletableFuture<?>[] futures = followers.stream()
+                .map(follower -> CompletableFuture.runAsync(
+                        () -> executeFollowerSignal(masterAccountId, follower, signal),
+                        followerExecutor))
+                .toArray(CompletableFuture[]::new);
+        CompletableFuture.allOf(futures).join();
+    }
+
+    private void executeFollowerSignal(
+            Long masterAccountId,
+            FollowerRouteCacheItem follower,
+            NormalizedMt5Signal signal
+    ) {
+        try {
+            transactionTemplate.executeWithoutResult(status ->
+                    processFollowerSignal(masterAccountId, follower, signal)
+            );
+        } catch (Exception ex) {
+            log.error("Failed to process follower signal, followerAccountId={}, eventId={}",
+                    follower.getFollowerAccountId(), signal.getEventId(), ex);
         }
     }
 

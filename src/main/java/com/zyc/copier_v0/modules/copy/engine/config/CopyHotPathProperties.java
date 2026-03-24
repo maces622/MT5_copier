@@ -27,4 +27,13 @@ public class CopyHotPathProperties {
 
     @Min(10)
     private long queueWorkerDelayMs = 200L;
+
+    @Min(0)
+    private int followerParallelism = 0;
+
+    public int resolvedFollowerParallelism() {
+        return followerParallelism > 0
+                ? followerParallelism
+                : Runtime.getRuntime().availableProcessors();
+    }
 }

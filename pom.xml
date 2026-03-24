@@ -29,6 +29,7 @@
     <properties>
         <java.version>17</java.version>
         <lombok.version>1.18.38</lombok.version>
+        <lettuce.version>6.3.2.RELEASE</lettuce.version>
     </properties>
     <dependencies>
         <dependency>

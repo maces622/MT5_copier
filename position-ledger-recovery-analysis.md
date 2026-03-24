@@ -107,6 +107,9 @@ public void reconcile(Long accountId, Long login, String server,
 
 **比对逻辑** (`sameSnapshot()`): 按 positionKey 逐条比较 `sourcePositionId`, `sourceOrderId`, `masterPositionId`, `masterOrderId`, `symbol`, `volume`, `priceOpen`, `sl`, `tp`, `commentText`。任何一项不同或数量不同，即判定为"不一致"。
 
+> [!NOTE]
+> **并行化上下文**：在 follower 并行处理改造后，`reconcile()` 的调用仍然是每个 follower 独立执行的（通过 `TransactionTemplate` 独立事务包裹），因此多个 follower 的仓位 reconcile 互不影响。`writeSnapshot()` 按 `accountKey` 维度操作，天然不存在写冲突。
+
 ---
 
 ### 阶段 4：异步持久化到 DB
