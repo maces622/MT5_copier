@@ -105,13 +105,14 @@
 
 1. 用户通过 `/api/auth/register` 或 `/api/auth/login` 进入控制台。
 2. Web Console 通过 `/api/me/accounts` 绑定 MT5 账户。
-3. 账户写入 MariaDB 后，`account-config` 同步刷新 Redis 中的 account-binding / route / risk 快照。
-4. 用户可以保存 follower 风控、symbol mapping、主从关系和 master share 配置。
-5. follower 可以通过 `share_id + share_code` 建立新的主从关系。
-6. 新关系默认可按业务规则处于 `PAUSED`，随后由 follower 侧切到 `ACTIVE`。
-7. 把关系改成 `PAUSED` 仅表示暂停复制，不会删除关系。
-8. 真正解绑关系要调用 `DELETE /api/me/copy-relations/{relationId}`。
-9. 删除 MT5 账户当前只开放给 `FOLLOWER`，并会级联清理该 follower 的关系、风控和 symbol mapping。
+3. 账户写入 MariaDB 且路由信息发生变更时，`account-config` 借助 `RedisRouteLockManager` 分布式自旋锁进行全流程保护，互斥维度为具体带单主账户 (`masterAccountId`)。
+4. 全量关系写入遵循严格安全时序：`获取 Redis 互斥写锁 -> TransactionTemplate 执行 DB 事务落盘 -> 覆写 Redis 路由快照树 -> 提交 DB 事务 -> 释放写锁`。在此期间，数据面热路径依靠 Snapshot Isolation 机制无锁极速读取缓存，保证跟单 0 延迟。
+5. 用户可以保存 follower 风控、symbol mapping、主从关系和 master share 配置。
+6. follower 可以通过 `share_id + share_code` 建立新的主从关系。
+7. 新关系默认可按业务规则处于 `PAUSED`，随后由 follower 侧切到 `ACTIVE`。
+8. 把关系改成 `PAUSED` 仅表示暂停复制，不会删除关系。
+9. 真正解绑关系要调用 `DELETE /api/me/copy-relations/{relationId}`。
+10. 删除 MT5 账户当前只开放给 `FOLLOWER`，并会级联清理该 follower 的关系、风控和 symbol mapping。
 
 ### 5.2 前端配置到 EA 参数链路
 
